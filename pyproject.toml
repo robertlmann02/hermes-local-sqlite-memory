@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-local-sqlite-memory"
+version = "0.1.0"
+description = "Local SQLite/FTS5 memory provider for Hermes Agent with review workflow, namespaces, graph context, and deterministic consolidation."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Hermes Local SQLite Memory contributors"}]
+keywords = ["hermes-agent", "memory", "sqlite", "fts5", "local-first"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+]
+
+[tool.setuptools.packages.find]
+include = ["hermes_local_sqlite_memory*"]
