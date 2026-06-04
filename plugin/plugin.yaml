@@ -1,0 +1,7 @@
+name: local_sqlite_memory
+version: 0.1.0
+description: "Local SQLite Memory — private SQLite/FTS5 memory provider with review workflow, namespaces, local graph context, and deterministic consolidation."
+hooks:
+  - sync_turn
+  - on_session_end
+  - on_memory_write
