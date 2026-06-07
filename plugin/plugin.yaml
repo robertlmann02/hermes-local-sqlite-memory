@@ -1,5 +1,5 @@
 name: local_sqlite_memory
-version: 0.1.1
+version: 0.1.2
 description: "Local SQLite Memory — private SQLite/FTS5 memory provider with review workflow, namespaces, local graph context, and deterministic consolidation."
 hooks:
   - sync_turn
