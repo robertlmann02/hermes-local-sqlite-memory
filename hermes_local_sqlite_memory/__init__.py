@@ -37,6 +37,8 @@ except ModuleNotFoundError:  # Allow standalone tests/package imports outside He
 
 logger = logging.getLogger(__name__)
 
+__version__ = "0.1.1"
+
 # Namespaces are intentionally user-defined; values are sanitized by _safe_namespace.
 _ALLOWED_TYPES = {"fact", "preference", "decision", "project", "infrastructure", "handoff", "identity", "other"}
 _DEFAULT_NAMESPACE = "default"
@@ -994,10 +996,14 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
         return True
 
     def get_config_schema(self):
-        from hermes_constants import display_hermes_home
+        try:
+            from hermes_constants import display_hermes_home  # type: ignore[import-not-found]
+            home_display = display_hermes_home()
+        except ModuleNotFoundError:
+            home_display = "~/.hermes"
         return [
-            {"key": "db_path", "description": "SQLite database path", "default": f"{display_hermes_home()}/local-sqlite-memory/memory.sqlite3"},
-            {"key": "namespace", "description": "Default namespace", "default": "default", "choices": sorted(_ALLOWED_NAMESPACES)},
+            {"key": "db_path", "description": "SQLite database path", "default": f"{home_display}/local-sqlite-memory/memory.sqlite3"},
+            {"key": "namespace", "description": "Default namespace", "default": "default"},
             {"key": "context_limit", "description": "Memories injected before each turn", "default": "8"},
             {"key": "sync_turns", "description": "Store turn excerpts locally", "default": "true", "choices": ["true", "false"]},
             {"key": "auto_propose", "description": "Create review proposals at session end", "default": "true", "choices": ["true", "false"]},

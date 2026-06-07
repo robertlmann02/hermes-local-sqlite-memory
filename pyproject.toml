@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-local-sqlite-memory"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local SQLite/FTS5 memory provider for Hermes Agent with review workflow, namespaces, graph context, and deterministic consolidation."
 readme = "README.md"
 requires-python = ">=3.11"
