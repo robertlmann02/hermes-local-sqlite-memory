@@ -37,7 +37,7 @@ except ModuleNotFoundError:  # Allow standalone tests/package imports outside He
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # Namespaces are intentionally user-defined; values are sanitized by _safe_namespace.
 _ALLOWED_TYPES = {"fact", "preference", "decision", "project", "infrastructure", "handoff", "identity", "other"}
@@ -117,6 +117,29 @@ def _dream_conclusion_text(messages: list[sqlite3.Row]) -> str:
     if phrase:
         return f"Dreamed pattern from recent messages: {phrase}. Evidence: {sample}"
     return f"Dreamed pattern from recent messages: {sample}"
+
+def _noise_regex() -> re.Pattern[str]:
+    """Patterns that should not become durable dream conclusions."""
+    return re.compile(
+        r"(reply exactly|verification|health check|context[_-]?ok|bridge[_-]?ok|"
+        r"test[_ -]?message|debug ok|\w*smoke\w*|default_profile_smoke_ok|"
+        r"profile_smoke_ok|profile_final_smoke_ok|set up dreaming|"
+        r"daily[_ -]?all[_ -]?bot[_ -]?dreaming|start at 3 am|end at 6 am|"
+        r"3 am every day|called tool\(s\)|previous turn was interrupted|"
+        r"conversation history contains|last tool result|temporary browser|noVNC|"
+        r"host=127\.0\.0\.1|ssh -L|vnc\.html)",
+        re.I,
+    )
+
+
+def _parse_ts(value: Any) -> float:
+    text = _clean_text(value, 80)
+    if not text:
+        return 0.0
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
 
 
 class _Store:
@@ -675,14 +698,7 @@ class _Store:
         rows = list(reversed(rows))
         # Dreaming should consolidate real conversational evidence, not smoke tests,
         # exact-reply verifications, or bridge health probes.
-        noise = re.compile(
-            r"(reply exactly|verification|health check|context[_-]?ok|bridge[_-]?ok|"
-            r"test[_ -]?message|debug ok|\w*smoke\w*|default_profile_smoke_ok|"
-            r"profile_smoke_ok|profile_final_smoke_ok|set up dreaming|"
-            r"daily[_ -]?all[_ -]?bot[_ -]?dreaming|start at 3 am|end at 6 am|"
-            r"3 am every day)",
-            re.I,
-        )
+        noise = _noise_regex()
         rows = [r for r in rows if not noise.search(r["content"] or "")]
         # Do not dream from a single one-off request, or from unrelated messages
         # pulled across sessions. Prefer the most recent session/topic cluster with
@@ -733,6 +749,105 @@ class _Store:
             "conclusions": created,
             "representation": representation,
         }
+
+    def cleanup_noise(self, namespace: str = _DEFAULT_NAMESPACE) -> dict:
+        """Archive/reject obvious smoke/tool fragments before dreaming."""
+        namespace = _safe_namespace(namespace)
+        noise = _noise_regex()
+        ts = _now()
+        rejected: list[str] = []
+        archived: list[str] = []
+        deleted_representations: list[str] = []
+        with self._lock, self._connect() as conn:
+            for row in conn.execute(
+                "SELECT * FROM review_queue WHERE namespace = ? AND status = 'pending'", (namespace,)
+            ).fetchall():
+                content = row["content"] or ""
+                proposed_type = row["proposed_type"] or ""
+                if noise.search(content) or (proposed_type == "infrastructure" and len(content) < 80):
+                    try:
+                        meta = json.loads(row["metadata"] or "{}")
+                    except Exception:
+                        meta = {}
+                    meta["cleanup_reason"] = "auto dream cleanup rejected obvious smoke/tool/task fragment"
+                    conn.execute(
+                        "UPDATE review_queue SET status='rejected', reviewed_at=?, metadata=? WHERE id=?",
+                        (ts, json.dumps(meta, ensure_ascii=False), row["id"]),
+                    )
+                    rejected.append(row["id"])
+            for row in conn.execute(
+                "SELECT * FROM conclusions WHERE namespace = ? AND status = 'active'", (namespace,)
+            ).fetchall():
+                if noise.search(row["content"] or ""):
+                    try:
+                        meta = json.loads(row["metadata"] or "{}")
+                    except Exception:
+                        meta = {}
+                    meta["cleanup_reason"] = "auto dream cleanup archived noisy conclusion"
+                    conn.execute(
+                        "UPDATE conclusions SET status='archived', updated_at=?, metadata=? WHERE id=?",
+                        (ts, json.dumps(meta, ensure_ascii=False), row["id"]),
+                    )
+                    conn.execute("DELETE FROM conclusions_fts WHERE id=?", (row["id"],))
+                    archived.append(row["id"])
+            for row in conn.execute(
+                "SELECT * FROM representations WHERE namespace = ?", (namespace,)
+            ).fetchall():
+                if noise.search(row["content"] or ""):
+                    conn.execute("DELETE FROM representations WHERE id=?", (row["id"],))
+                    deleted_representations.append(row["id"])
+        return {
+            "namespace": namespace,
+            "rejected": len(rejected),
+            "archived": len(archived),
+            "deleted_representations": len(deleted_representations),
+        }
+
+    def auto_dream_state(self, namespace: str = _DEFAULT_NAMESPACE) -> dict:
+        namespace = _safe_namespace(namespace)
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT metadata FROM workspaces WHERE namespace=?", (namespace,)).fetchone()
+        try:
+            return json.loads((row["metadata"] if row else "") or "{}")
+        except Exception:
+            return {}
+
+    def record_auto_dream(self, namespace: str = _DEFAULT_NAMESPACE, result: Optional[dict] = None) -> None:
+        namespace = _safe_namespace(namespace)
+        ts = _now()
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT id, metadata FROM workspaces WHERE namespace=?", (namespace,)).fetchone()
+            try:
+                meta = json.loads((row["metadata"] if row else "") or "{}")
+            except Exception:
+                meta = {}
+            meta["last_auto_dream_at"] = ts
+            meta["last_auto_dream"] = result or {}
+            if row:
+                conn.execute("UPDATE workspaces SET updated_at=?, metadata=? WHERE namespace=?", (ts, json.dumps(meta, ensure_ascii=False), namespace))
+            else:
+                conn.execute(
+                    "INSERT INTO workspaces(id, namespace, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?)",
+                    (f"ws_{namespace}", namespace, ts, ts, json.dumps(meta, ensure_ascii=False)),
+                )
+
+    def self_maintain(self, namespace: str = _DEFAULT_NAMESPACE, assistant_handle: str = "default", limit: int = 48) -> dict:
+        """Run the cron-style maintenance locally for this provider's own namespace."""
+        namespace = _safe_namespace(namespace)
+        assistant_handle = _clean_text(assistant_handle or "default", 120) or "default"
+        cleanup = self.cleanup_noise(namespace)
+        assistant_peer = self.upsert_peer(assistant_handle, namespace, role="assistant", metadata={"source": "self_maintain"})
+        workspace_dream = self.dream_cycle(namespace=namespace, limit=limit)
+        peer_dream = self.dream_cycle(namespace=namespace, peer_id=assistant_peer["id"], limit=limit)
+        result = {
+            "namespace": namespace,
+            "assistant_peer_id": assistant_peer["id"],
+            "cleanup": cleanup,
+            "workspace_dream": workspace_dream,
+            "peer_dream": peer_dream,
+        }
+        self.record_auto_dream(namespace, result)
+        return result
 
     def add_proposal(self, content: str, namespace: str, proposed_type: str, evidence: str,
                      source_session: str = "", confidence: float = 0.5, metadata: Optional[dict] = None) -> dict:
@@ -951,7 +1066,7 @@ LOCAL_MEMORY_HONCHO_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["upsert_peer", "upsert_session", "add_message", "add_conclusion", "build_representation", "dream", "context"]},
+            "action": {"type": "string", "enum": ["upsert_peer", "upsert_session", "add_message", "add_conclusion", "build_representation", "dream", "cleanup", "self_maintain", "context"]},
             "namespace": {"type": "string", "description": "Workspace namespace; default default."},
             "peer_handle": {"type": "string", "description": "Stable peer handle, e.g. user, assistant, workspace."},
             "peer_id": {"type": "string", "description": "Peer ID for messages/conclusions/representations."},
@@ -986,6 +1101,10 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
         self._context_limit = int(self._config.get("context_limit", _MAX_CONTEXT_RESULTS))
         self._sync_turns = str(self._config.get("sync_turns", "true")).lower() not in {"0", "false", "no"}
         self._auto_propose = str(self._config.get("auto_propose", "true")).lower() not in {"0", "false", "no"}
+        self._auto_dream = str(self._config.get("auto_dream", "true")).lower() not in {"0", "false", "no"}
+        self._auto_dream_interval_seconds = int(self._config.get("auto_dream_interval_seconds", 86400))
+        self._auto_dream_limit = int(self._config.get("auto_dream_limit", 48))
+        self._assistant_handle = _clean_text(self._config.get("assistant_handle", "default"), 120) or "default"
         self._initialized = False
 
     @property
@@ -1007,6 +1126,10 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
             {"key": "context_limit", "description": "Memories injected before each turn", "default": "8"},
             {"key": "sync_turns", "description": "Store turn excerpts locally", "default": "true", "choices": ["true", "false"]},
             {"key": "auto_propose", "description": "Create review proposals at session end", "default": "true", "choices": ["true", "false"]},
+            {"key": "auto_dream", "description": "Run deterministic cleanup/dream maintenance opportunistically at session end", "default": "true", "choices": ["true", "false"]},
+            {"key": "auto_dream_interval_seconds", "description": "Minimum seconds between automatic dream maintenance runs", "default": "86400"},
+            {"key": "auto_dream_limit", "description": "Recent graph messages inspected by automatic dream maintenance", "default": "48"},
+            {"key": "assistant_handle", "description": "Assistant peer handle used for automatic peer dreaming", "default": "default"},
         ]
 
     def save_config(self, values, hermes_home):
@@ -1035,6 +1158,10 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
         self._context_limit = max(1, min(int(merged.get("context_limit", _MAX_CONTEXT_RESULTS)), 20))
         self._sync_turns = str(merged.get("sync_turns", "true")).lower() not in {"0", "false", "no"}
         self._auto_propose = str(merged.get("auto_propose", "true")).lower() not in {"0", "false", "no"}
+        self._auto_dream = str(merged.get("auto_dream", "true")).lower() not in {"0", "false", "no"}
+        self._auto_dream_interval_seconds = max(0, int(merged.get("auto_dream_interval_seconds", 86400)))
+        self._auto_dream_limit = max(1, min(int(merged.get("auto_dream_limit", 48)), 100))
+        self._assistant_handle = _clean_text(merged.get("assistant_handle", "default"), 120) or "default"
         db_path = str(merged.get("db_path") or "$HERMES_HOME/local-sqlite-memory/memory.sqlite3")
         db_path = db_path.replace("$HERMES_HOME", str(hermes_home)).replace("${HERMES_HOME}", str(hermes_home))
         self._store = _Store(Path(db_path))
@@ -1068,7 +1195,7 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
             self._store.add_turn(user_content, assistant_content, self._namespace, sid, {"provider": self.name})
             self._store.upsert_session(sid, self._namespace, metadata={"provider": self.name, "source": "sync_turn"})
             user_peer = self._store.upsert_peer("user", self._namespace, role="user", metadata={"source": "sync_turn"})
-            assistant_peer = self._store.upsert_peer("default", self._namespace, role="assistant", metadata={"source": "sync_turn"})
+            assistant_peer = self._store.upsert_peer(self._assistant_handle, self._namespace, role="assistant", metadata={"source": "sync_turn"})
             if _clean_text(user_content):
                 self._store.add_message(user_content, self._namespace, sid, user_peer["id"], "user", {"source": "sync_turn"})
             if _clean_text(assistant_content):
@@ -1076,14 +1203,39 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.warning("Local SQLite memory sync_turn failed: %s", e)
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not self._store or not self._auto_propose or not messages:
+    def _maybe_auto_dream(self, reason: str = "session_end") -> None:
+        if not self._store or not self._auto_dream:
             return
-        for prop in _extract_proposals_from_messages(messages, self._namespace, self._session_id):
-            try:
-                self._store.add_proposal(**prop)
-            except Exception as e:
-                logger.debug("Failed adding Local memory proposal: %s", e)
+        try:
+            state = self._store.auto_dream_state(self._namespace)
+            last = _parse_ts(state.get("last_auto_dream_at"))
+            now_ts = datetime.now(timezone.utc).timestamp()
+            if self._auto_dream_interval_seconds and last and (now_ts - last) < self._auto_dream_interval_seconds:
+                return
+            result = self._store.self_maintain(
+                self._namespace, assistant_handle=self._assistant_handle, limit=self._auto_dream_limit
+            )
+            result["reason"] = reason
+            self._store.record_auto_dream(self._namespace, result)
+            logger.info(
+                "Local SQLite memory auto dream completed namespace=%s workspace_created=%s peer_created=%s",
+                self._namespace,
+                result.get("workspace_dream", {}).get("created_conclusions"),
+                result.get("peer_dream", {}).get("created_conclusions"),
+            )
+        except Exception as e:
+            logger.debug("Local SQLite memory auto dream skipped/failed: %s", e)
+
+    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        if not self._store:
+            return
+        if self._auto_propose and messages:
+            for prop in _extract_proposals_from_messages(messages, self._namespace, self._session_id):
+                try:
+                    self._store.add_proposal(**prop)
+                except Exception as e:
+                    logger.debug("Failed adding Local memory proposal: %s", e)
+        self._maybe_auto_dream("session_end")
 
     def on_memory_write(self, action, target, content, metadata=None):
         if not self._store or action not in {"add", "replace"}:
@@ -1200,6 +1352,12 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                         namespace=ns, peer_id=args.get("peer_id", ""), limit=int(args.get("limit", 24))
                     )
                     return _json_result(dream=dream)
+                if action == "cleanup":
+                    return _json_result(cleanup=self._store.cleanup_noise(ns))
+                if action == "self_maintain":
+                    return _json_result(maintenance=self._store.self_maintain(
+                        ns, assistant_handle=args.get("peer_handle", self._assistant_handle), limit=int(args.get("limit", self._auto_dream_limit))
+                    ))
                 if action == "context":
                     return _json_result(context=self._store.graph_context(
                         args.get("query", args.get("content", "")), namespace=ns, limit=int(args.get("limit", 8))

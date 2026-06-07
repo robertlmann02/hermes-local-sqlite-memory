@@ -10,6 +10,7 @@ A local-first SQLite/FTS5 memory provider for [Hermes Agent](https://hermes-agen
 - Review queue: propose, list, approve, reject, archive/delete.
 - Graph-style workspace, peer, session, message, conclusion, and representation tables.
 - Deterministic local consolidation pass for repeated recent patterns.
+- Opportunistic self-maintenance: cleanup + workspace/peer dreaming can run at session end without an external cron job.
 - User-defined namespaces so different assistants/users stay separated.
 - Runtime tools for store/search/context/review/forget/status/graph operations.
 - No vector database, embedding model, or cloud memory dependency.
@@ -40,9 +41,23 @@ Optional provider config at `$HERMES_HOME/local_sqlite_memory.json`:
   "namespace": "default",
   "context_limit": "8",
   "sync_turns": "true",
-  "auto_propose": "true"
+  "auto_propose": "true",
+  "auto_dream": "true",
+  "auto_dream_interval_seconds": "86400",
+  "auto_dream_limit": "48",
+  "assistant_handle": "default"
 }
 ```
+
+With `auto_dream=true`, the provider performs the same class of maintenance that an external daily cron would normally do for a single active namespace:
+
+- reject/archive obvious smoke-test, tool-fragment, and health-check memory noise;
+- ensure the configured assistant peer exists;
+- run a deterministic workspace dream pass;
+- run a deterministic assistant-peer dream pass;
+- record the last run in workspace metadata so it does not repeat more often than `auto_dream_interval_seconds`.
+
+This is opportunistic: it runs when Hermes calls the provider's session-end hook, so active assistants maintain themselves locally. Fleet-wide cross-host scheduling is still possible, but is no longer required for active bots.
 
 ## Tool names
 
@@ -63,6 +78,8 @@ hermes local_sqlite_memory search "concise status" --namespace default
 hermes local_sqlite_memory review list --namespace default
 hermes local_sqlite_memory dream --namespace default
 ```
+
+The graph tool also exposes `cleanup` and `self_maintain` actions for manual or integration-level maintenance.
 
 ## Development checks
 

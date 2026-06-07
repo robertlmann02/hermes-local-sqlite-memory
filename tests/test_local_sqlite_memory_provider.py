@@ -277,3 +277,63 @@ def test_dream_cycle_does_not_recreate_archived_duplicate(tmp_path):
         "peer_id": peer["id"],
     }))["dream"]
     assert second["created_conclusions"] == 0
+
+
+
+def test_auto_dream_runs_self_maintenance_on_session_end(tmp_path):
+    p = LocalSQLiteMemoryProvider({
+        "db_path": str(tmp_path / "memory.sqlite3"),
+        "namespace": "autodream",
+        "auto_dream": "true",
+        "auto_dream_interval_seconds": "0",
+        "assistant_handle": "test_assistant",
+    })
+    p.initialize("auto-session", hermes_home=str(tmp_path), platform="cli")
+    p.sync_turn("Remember the router prefers wired failover", "Noted", session_id="auto-session")
+    p.sync_turn("The router wired failover should stay preferred", "Confirmed", session_id="auto-session")
+    p.on_session_end([])
+    status = json.loads(p.handle_tool_call("local_memory_status", {}))["status"]
+    conclusions = [x for x in status["graph"]["conclusions"] if x["namespace"] == "autodream" and x["status"] == "active"]
+    peers = [x for x in status["graph"]["peers"] if x["namespace"] == "autodream"]
+    assert conclusions
+    assert any(peer["c"] >= 2 for peer in peers)
+    ctx = json.loads(p.handle_tool_call("local_memory_graph", {
+        "action": "context",
+        "namespace": "autodream",
+        "query": "wired failover",
+    }))["context"]
+    assert ctx["conclusions"]
+
+
+def test_self_maintain_cleans_noise_and_builds_peer_representation(tmp_path):
+    p = _provider(tmp_path)
+    peer = json.loads(p.handle_tool_call("local_memory_graph", {
+        "action": "upsert_peer",
+        "namespace": "default",
+        "peer_handle": "assistant_bot",
+        "role": "assistant",
+    }))["peer"]
+    p.handle_tool_call("local_memory_graph", {
+        "action": "add_conclusion",
+        "namespace": "default",
+        "content": "Reply exactly: DEFAULT_PROFILE_SMOKE_OK",
+        "scope": "workspace",
+    })
+    for i in range(2):
+        p.handle_tool_call("local_memory_graph", {
+            "action": "add_message",
+            "namespace": "default",
+            "session_id": "maintain-session",
+            "peer_id": peer["id"],
+            "role": "assistant",
+            "content": f"The assistant should remember durable maintenance insight {i}.",
+        })
+    result = json.loads(p.handle_tool_call("local_memory_graph", {
+        "action": "self_maintain",
+        "namespace": "default",
+        "peer_handle": "assistant_bot",
+        "limit": 48,
+    }))["maintenance"]
+    assert result["cleanup"]["archived"] >= 1
+    assert result["workspace_dream"]["created_conclusions"] + result["peer_dream"]["created_conclusions"] >= 1
+    assert result["peer_dream"]["representation"]["kind"] == "dream_context"
