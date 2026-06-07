@@ -9,6 +9,14 @@ def _provider(tmp_path):
     return p
 
 
+def test_config_schema_allows_user_defined_namespaces(tmp_path):
+    p = _provider(tmp_path)
+    config = p.get_config_schema()
+    namespace = next(item for item in config if item["key"] == "namespace")
+    assert namespace["default"] == "default"
+    assert "choices" not in namespace
+
+
 def test_store_and_search_memory(tmp_path):
     p = _provider(tmp_path)
     stored = json.loads(p.handle_tool_call("local_memory_store", {
