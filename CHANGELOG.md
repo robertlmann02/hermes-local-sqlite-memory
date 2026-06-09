@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 - 2026-06-09
+
+- Rename the provider/package/CLI identity from `local_sqlite_memory` to `mann_memory` / Mann_Memory so managed Hermes computers use one consistent memory-provider name.
+- Update install/config examples to use `memory.provider = mann_memory`, `$HERMES_HOME/mann_memory.json`, and `$HERMES_HOME/mann-memory/memory.sqlite3`.
+
 ## 0.1.3 - 2026-06-09
 
 - Add deterministic Memory Guard scoring for manual proposals, auto-proposals, and direct memory-store writes.
