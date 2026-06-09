@@ -146,8 +146,8 @@ def _memory_guard(content: str, namespace: str = _DEFAULT_NAMESPACE, memory_type
     score = 0.0
 
     injection_patterns = [
-        r"\bignore\s+(?:all\s+)?(?:previous|prior|above|developer|system|user)\s+instructions\b",
-        r"\boverride\s+(?:developer|system|user)\s+instructions\b",
+        r"\bignore\s+(?:all\s+)?(?:(?:previous|prior|above)\s+)?(?:developer|system|user)?\s*instructions\b",
+        r"\boverride\s+(?:(?:previous|prior|above)\s+)?(?:developer|system|user)\s+instructions\b",
         r"\breveal\s+(?:all\s+)?(?:system\s+prompts?|developer\s+messages?|api\s+keys?|secrets?)\b",
         r"\bexfiltrate\b|\bsend\s+(?:all\s+)?(?:secrets?|api\s+keys?|tokens?)\b",
         r"\balways\s+(?:ignore|bypass|override|disobey)\b",
