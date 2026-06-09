@@ -37,7 +37,7 @@ except ModuleNotFoundError:  # Allow standalone tests/package imports outside He
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 # Namespaces are intentionally user-defined; values are sanitized by _safe_namespace.
 _ALLOWED_TYPES = {"fact", "preference", "decision", "project", "infrastructure", "handoff", "identity", "other"}
@@ -130,6 +130,69 @@ def _noise_regex() -> re.Pattern[str]:
         r"host=127\.0\.0\.1|ssh -L|vnc\.html)",
         re.I,
     )
+
+
+def _memory_guard(content: str, namespace: str = _DEFAULT_NAMESPACE, memory_type: str = "fact") -> dict:
+    """Deterministically score memory proposals for poisoning/secret risk.
+
+    This is intentionally local, explainable, and conservative: it does not use
+    an LLM to decide what becomes durable memory. Suspicious entries remain
+    reviewable, but are quarantined away from the normal pending queue until a
+    human explicitly inspects them.
+    """
+    text = _clean_text(content, 5000)
+    lower = text.lower()
+    reasons: list[str] = []
+    score = 0.0
+
+    injection_patterns = [
+        r"\bignore\s+(?:all\s+)?(?:previous|prior|above|developer|system|user)\s+instructions\b",
+        r"\boverride\s+(?:developer|system|user)\s+instructions\b",
+        r"\breveal\s+(?:all\s+)?(?:system\s+prompts?|developer\s+messages?|api\s+keys?|secrets?)\b",
+        r"\bexfiltrate\b|\bsend\s+(?:all\s+)?(?:secrets?|api\s+keys?|tokens?)\b",
+        r"\balways\s+(?:ignore|bypass|override|disobey)\b",
+        r"\bdo\s+not\s+(?:tell|inform)\s+the\s+user\b",
+    ]
+    if any(re.search(p, lower, re.I) for p in injection_patterns):
+        reasons.append("prompt_injection_language")
+        score += 0.85
+
+    secret_patterns = [
+        r"\bsk-[A-Za-z0-9_.-]{3,}\b",
+        r"\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|secret)\b\s*[:=]\s*\S+",
+        r"-----BEGIN (?:RSA |OPENSSH |EC |DSA |)PRIVATE KEY-----",
+        r"\bgh[pousr]_[A-Za-z0-9_]{12,}\b",
+    ]
+    if any(re.search(p, text, re.I) for p in secret_patterns):
+        reasons.append("possible_secret")
+        score += 0.95
+
+    cross_namespace_patterns = [
+        r"\b(?:deuce|penny|mannbookair|ayonna)\b.*\b(?:same|identical|impersonate|ignore namespace)\b",
+        r"\b(?:merge|mix)\s+(?:all\s+)?(?:namespaces|profiles|assistants)\b",
+        r"\b(?:penny|mannbookair|ayonna)\b.*\b(?:is|are)\s+deuce\b",
+    ]
+    if any(re.search(p, lower, re.I) for p in cross_namespace_patterns):
+        reasons.append("cross_namespace_identity_claim")
+        score += 0.7
+
+    imperative_patterns = [
+        r"^(?:always|never)\s+[^.]{12,}",
+        r"\bfrom now on\b.{0,120}\b(?:ignore|bypass|override|do not)\b",
+    ]
+    if any(re.search(p, lower, re.I) for p in imperative_patterns):
+        reasons.append("imperative_system_instruction")
+        score += 0.35
+
+    reasons = list(dict.fromkeys(reasons))
+    score = min(1.0, round(score, 2))
+    return {
+        "score": score,
+        "reasons": reasons,
+        "quarantine": bool(score >= 0.75 or "possible_secret" in reasons or "prompt_injection_language" in reasons),
+        "namespace": _safe_namespace(namespace),
+        "memory_type": _safe_type(memory_type),
+    }
 
 
 def _parse_ts(value: Any) -> float:
@@ -856,10 +919,15 @@ class _Store:
             raise ValueError("proposal content is required")
         namespace = _safe_namespace(namespace)
         proposed_type = _safe_type(proposed_type)
-        # Avoid flooding duplicate pending proposals.
+        guard = _memory_guard(content, namespace=namespace, memory_type=proposed_type)
+        metadata = dict(metadata or {})
+        metadata["guard"] = guard
+        status = "quarantined" if guard["quarantine"] else "pending"
+        # Avoid flooding duplicate open proposals, including quarantined ones.
         with self._lock, self._connect() as conn:
             existing = conn.execute(
-                "SELECT * FROM review_queue WHERE namespace = ? AND status = 'pending' AND lower(content) = lower(?) LIMIT 1",
+                """SELECT * FROM review_queue
+                   WHERE namespace = ? AND status IN ('pending', 'quarantined') AND lower(content) = lower(?) LIMIT 1""",
                 (namespace, content),
             ).fetchone()
             if existing:
@@ -868,9 +936,9 @@ class _Store:
             ts = _now()
             conn.execute(
                 """INSERT INTO review_queue(id, namespace, proposed_type, content, evidence, source_session,
-                   status, confidence, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
-                (pid, namespace, proposed_type, content, _clean_text(evidence, 4000), source_session, float(confidence), ts,
-                 json.dumps(metadata or {}, ensure_ascii=False)),
+                   status, confidence, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (pid, namespace, proposed_type, content, _clean_text(evidence, 4000), source_session, status, float(confidence), ts,
+                 json.dumps(metadata, ensure_ascii=False)),
             )
             row = conn.execute("SELECT * FROM review_queue WHERE id = ?", (pid,)).fetchone()
         return dict(row)
@@ -878,7 +946,7 @@ class _Store:
     def list_proposals(self, namespace: str = _DEFAULT_NAMESPACE, status: str = "pending", limit: int = 20) -> List[dict]:
         namespace = _safe_namespace(namespace)
         limit = max(1, min(int(limit or 20), 100))
-        if status not in {"pending", "approved", "rejected", "all"}:
+        if status not in {"pending", "quarantined", "approved", "rejected", "all"}:
             status = "pending"
         with self._lock, self._connect() as conn:
             if status == "all":
@@ -1042,6 +1110,7 @@ LOCAL_MEMORY_REVIEW_SCHEMA = {
             "namespace": {"type": "string", "description": "Namespace; default default."},
             "memory_type": {"type": "string", "enum": sorted(_ALLOWED_TYPES), "description": "Proposal category."},
             "limit": {"type": "integer", "description": "List limit; default 20."},
+            "status": {"type": "string", "enum": ["pending", "quarantined", "approved", "rejected", "all"], "description": "List filter for action=list; default pending."},
         },
         "required": ["action"],
     },
@@ -1273,13 +1342,23 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
             return tool_error("Local SQLite memory is not initialized")
         try:
             if tool_name == "local_memory_store":
+                content = args.get("content", "")
+                ns = args.get("namespace", self._namespace)
+                memory_type = args.get("memory_type", "fact")
+                guard = _memory_guard(content, namespace=ns, memory_type=memory_type)
+                if guard["quarantine"]:
+                    prop = self._store.add_proposal(
+                        content, namespace=ns, proposed_type=memory_type,
+                        evidence="quarantined direct store via tool", source_session=self._session_id,
+                        confidence=float(args.get("confidence", 0.7)), metadata={"source": "local_memory_store"},
+                    )
+                    return _json_result(quarantined=True, guard=guard, proposal=prop)
                 mem = self._store.add_memory(
-                    args.get("content", ""), namespace=args.get("namespace", self._namespace),
-                    memory_type=args.get("memory_type", "fact"), source="tool",
+                    content, namespace=ns, memory_type=memory_type, source="tool",
                     source_session=self._session_id, confidence=float(args.get("confidence", 0.7)),
-                    importance=float(args.get("importance", 0.6)),
+                    importance=float(args.get("importance", 0.6)), metadata={"guard": guard},
                 )
-                return _json_result(memory=mem)
+                return _json_result(memory=mem, guard=guard, quarantined=False)
             if tool_name == "local_memory_search":
                 ns = args.get("namespace", self._namespace)
                 query = args.get("query", "")
@@ -1296,7 +1375,9 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                 action = (args.get("action") or "list").lower()
                 ns = args.get("namespace", self._namespace)
                 if action == "list":
-                    return _json_result(proposals=self._store.list_proposals(ns, limit=int(args.get("limit", 20))))
+                    return _json_result(proposals=self._store.list_proposals(
+                        ns, status=args.get("status", "pending"), limit=int(args.get("limit", 20))
+                    ))
                 if action == "propose":
                     prop = self._store.add_proposal(
                         args.get("content", ""), namespace=ns,
