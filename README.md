@@ -1,4 +1,4 @@
-# Hermes Local SQLite Memory
+# Hermes Mann_Memory
 
 A local-first SQLite/FTS5 memory provider for [Hermes Agent](https://hermes-agent.nousresearch.com/docs). It is designed for private self-hosted assistants that need durable memory, searchable turn history, reviewable memory proposals, namespace isolation, graph-style context, and deterministic local consolidation without a cloud memory service.
 
@@ -21,24 +21,24 @@ A local-first SQLite/FTS5 memory provider for [Hermes Agent](https://hermes-agen
 Copy the provider package into a Hermes memory plugin directory:
 
 ```bash
-mkdir -p ~/.hermes/hermes-agent/plugins/memory/local_sqlite_memory
-cp hermes_local_sqlite_memory/__init__.py ~/.hermes/hermes-agent/plugins/memory/local_sqlite_memory/__init__.py
-cp hermes_local_sqlite_memory/cli.py ~/.hermes/hermes-agent/plugins/memory/local_sqlite_memory/cli.py
-cp plugin/plugin.yaml ~/.hermes/hermes-agent/plugins/memory/local_sqlite_memory/plugin.yaml
+mkdir -p ~/.hermes/hermes-agent/plugins/memory/mann_memory
+cp mann_memory/__init__.py ~/.hermes/hermes-agent/plugins/memory/mann_memory/__init__.py
+cp mann_memory/cli.py ~/.hermes/hermes-agent/plugins/memory/mann_memory/cli.py
+cp plugin/plugin.yaml ~/.hermes/hermes-agent/plugins/memory/mann_memory/plugin.yaml
 ```
 
 Then activate it:
 
 ```bash
-hermes config set memory.provider local_sqlite_memory
+hermes config set memory.provider mann_memory
 hermes memory status
 ```
 
-Optional provider config at `$HERMES_HOME/local_sqlite_memory.json`:
+Optional provider config at `$HERMES_HOME/mann_memory.json`:
 
 ```json
 {
-  "db_path": "$HERMES_HOME/local-sqlite-memory/memory.sqlite3",
+  "db_path": "$HERMES_HOME/mann-memory/memory.sqlite3",
   "namespace": "default",
   "context_limit": "8",
   "sync_turns": "true",
@@ -62,37 +62,37 @@ This is opportunistic: it runs when Hermes calls the provider's session-end hook
 
 ## Tool names
 
-- `local_memory_store`
-- `local_memory_search`
-- `local_memory_context`
-- `local_memory_review`
-- `local_memory_forget`
-- `local_memory_graph`
-- `local_memory_status`
+- `mann_memory_store`
+- `mann_memory_search`
+- `mann_memory_context`
+- `mann_memory_review`
+- `mann_memory_forget`
+- `mann_memory_graph`
+- `mann_memory_status`
 
 ## CLI examples
 
 ```bash
-hermes local_sqlite_memory status
-hermes local_sqlite_memory remember "User prefers concise status updates." --namespace default --memory-type preference
-hermes local_sqlite_memory search "concise status" --namespace default
-hermes local_sqlite_memory review list --namespace default
-hermes local_sqlite_memory review list --namespace default --status quarantined
-hermes local_sqlite_memory dream --namespace default
+hermes mann_memory status
+hermes mann_memory remember "User prefers concise status updates." --namespace default --memory-type preference
+hermes mann_memory search "concise status" --namespace default
+hermes mann_memory review list --namespace default
+hermes mann_memory review list --namespace default --status quarantined
+hermes mann_memory dream --namespace default
 ```
 
 The graph tool also exposes `cleanup` and `self_maintain` actions for manual or integration-level maintenance.
 
 ## Memory Guard quarantine
 
-Every manual proposal, auto-proposal, and direct `local_memory_store` write is scored by a local deterministic guard before it can become durable memory. The guard flags patterns associated with:
+Every manual proposal, auto-proposal, and direct `mann_memory_store` write is scored by a local deterministic guard before it can become durable memory. The guard flags patterns associated with:
 
 - prompt-injection language such as ignoring or overriding system/developer/user instructions;
 - possible secrets such as API keys, access tokens, or private-key material;
 - cross-namespace identity contamination such as merging assistant identities;
 - imperative system-instruction style memories.
 
-Suspicious direct stores are not written to active memory. They are placed in the review queue with `status=quarantined` and guard metadata explaining the score/reasons. Normal review lists still show only `pending` items by default; inspect quarantined entries explicitly with `local_memory_review` status `quarantined` or the CLI `--status quarantined` option.
+Suspicious direct stores are not written to active memory. They are placed in the review queue with `status=quarantined` and guard metadata explaining the score/reasons. Normal review lists still show only `pending` items by default; inspect quarantined entries explicitly with `mann_memory_review` status `quarantined` or the CLI `--status quarantined` option.
 
 ## Development checks
 
@@ -100,7 +100,7 @@ Run from this repository with Hermes Agent source on `PYTHONPATH`:
 
 ```bash
 PYTHONPATH=/path/to/hermes-agent python -m pytest tests -q
-PYTHONPATH=/path/to/hermes-agent python -m py_compile hermes_local_sqlite_memory/__init__.py hermes_local_sqlite_memory/cli.py
+PYTHONPATH=/path/to/hermes-agent python -m py_compile mann_memory/__init__.py mann_memory/cli.py
 ```
 
 ## Privacy notes

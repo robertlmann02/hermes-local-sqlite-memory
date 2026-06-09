@@ -1,10 +1,10 @@
-"""Local SQLite Memory — private local SQLite/FTS5 memory provider.
+"""Mann_Memory — private local SQLite/FTS5 memory provider.
 
 This provider is intentionally dependency-light for Raspberry Pi deployments:
 SQLite + FTS5 only, no cloud service, no embedding/vector dependencies.  It
 supports three phases for a local-first memory workflow:
 
-1. Local memory core: turns, durable memories, namespaces, CRUD/search tools.
+1. Mann_Memory core: turns, durable memories, namespaces, CRUD/search tools.
 2. Better recall: FTS5-ranked context injection and explicit context/search tools.
 3. Review workflow: heuristic proposal extraction from sessions and tools/CLI to
    review, approve, reject, or promote proposed durable memories.
@@ -37,7 +37,7 @@ except ModuleNotFoundError:  # Allow standalone tests/package imports outside He
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 # Namespaces are intentionally user-defined; values are sanitized by _safe_namespace.
 _ALLOWED_TYPES = {"fact", "preference", "decision", "project", "infrastructure", "handoff", "identity", "other"}
@@ -76,7 +76,7 @@ def _fts_query(query: str) -> str:
     """Build a forgiving FTS5 query from user text.
 
     Exact phrase matching is too brittle for recall ("private memory" should
-    match "private local memory"). Use OR'd prefix tokens and keep syntax
+    match "private Mann_Memory"). Use OR'd prefix tokens and keep syntax
     conservative so arbitrary user text cannot break MATCH parsing.
     """
     tokens = re.findall(r"[\w]+", query.lower())
@@ -1054,8 +1054,8 @@ def _extract_proposals_from_messages(messages: Iterable[Dict[str, Any]], namespa
 
 
 LOCAL_MEMORY_STORE_SCHEMA = {
-    "name": "local_memory_store",
-    "description": "Store an explicit durable memory in private local Local memory. Use only for stable facts/preferences/decisions the user would expect remembered.",
+    "name": "mann_memory_store",
+    "description": "Store an explicit durable memory in private local Mann_Memory. Use only for stable facts/preferences/decisions the user would expect remembered.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1070,7 +1070,7 @@ LOCAL_MEMORY_STORE_SCHEMA = {
 }
 
 LOCAL_MEMORY_SEARCH_SCHEMA = {
-    "name": "local_memory_search",
+    "name": "mann_memory_search",
     "description": "Search private local long-term memories and optionally recent turn excerpts in a namespace.",
     "parameters": {
         "type": "object",
@@ -1085,8 +1085,8 @@ LOCAL_MEMORY_SEARCH_SCHEMA = {
 }
 
 LOCAL_MEMORY_CONTEXT_SCHEMA = {
-    "name": "local_memory_context",
-    "description": "Return a concise context block for the current task from private local memory.",
+    "name": "mann_memory_context",
+    "description": "Return a concise context block for the current task from private Mann_Memory.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1099,7 +1099,7 @@ LOCAL_MEMORY_CONTEXT_SCHEMA = {
 }
 
 LOCAL_MEMORY_REVIEW_SCHEMA = {
-    "name": "local_memory_review",
+    "name": "mann_memory_review",
     "description": "Review proposed memories: list pending proposals, add a proposal, approve, or reject. Approved proposals become durable memories.",
     "parameters": {
         "type": "object",
@@ -1117,8 +1117,8 @@ LOCAL_MEMORY_REVIEW_SCHEMA = {
 }
 
 LOCAL_MEMORY_FORGET_SCHEMA = {
-    "name": "local_memory_forget",
-    "description": "Archive/delete a specific private local memory by ID.",
+    "name": "mann_memory_forget",
+    "description": "Archive/delete a specific private Mann_Memory by ID.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1130,7 +1130,7 @@ LOCAL_MEMORY_FORGET_SCHEMA = {
 }
 
 LOCAL_MEMORY_HONCHO_SCHEMA = {
-    "name": "local_memory_graph",
+    "name": "mann_memory_graph",
     "description": "Local Graph-aligned primitives over SQLite: upsert peers/sessions, add messages/conclusions, build representations, or return combined context.",
     "parameters": {
         "type": "object",
@@ -1155,8 +1155,8 @@ LOCAL_MEMORY_HONCHO_SCHEMA = {
 
 
 LOCAL_MEMORY_STATUS_SCHEMA = {
-    "name": "local_memory_status",
-    "description": "Show private local Local memory database path and counts by namespace/status.",
+    "name": "mann_memory_status",
+    "description": "Show private local Mann_Memory database path and counts by namespace/status.",
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
@@ -1178,7 +1178,7 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
 
     @property
     def name(self) -> str:
-        return "local_sqlite_memory"
+        return "mann_memory"
 
     def is_available(self) -> bool:
         return True
@@ -1190,7 +1190,7 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
         except ModuleNotFoundError:
             home_display = "~/.hermes"
         return [
-            {"key": "db_path", "description": "SQLite database path", "default": f"{home_display}/local-sqlite-memory/memory.sqlite3"},
+            {"key": "db_path", "description": "SQLite database path", "default": f"{home_display}/mann-memory/memory.sqlite3"},
             {"key": "namespace", "description": "Default namespace", "default": "default"},
             {"key": "context_limit", "description": "Memories injected before each turn", "default": "8"},
             {"key": "sync_turns", "description": "Store turn excerpts locally", "default": "true", "choices": ["true", "false"]},
@@ -1202,18 +1202,18 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
         ]
 
     def save_config(self, values, hermes_home):
-        config_path = Path(hermes_home) / "local_sqlite_memory.json"
+        config_path = Path(hermes_home) / "mann_memory.json"
         config_path.write_text(json.dumps(values or {}, indent=2), encoding="utf-8")
         # Keep plugin-specific config native, not under plugins.*; activation is still memory.provider.
 
     def _load_config_file(self, hermes_home: str) -> dict:
-        path = Path(hermes_home) / "local_sqlite_memory.json"
+        path = Path(hermes_home) / "mann_memory.json"
         if not path.exists():
             return {}
         try:
             return json.loads(path.read_text(encoding="utf-8")) or {}
         except Exception as e:
-            logger.warning("Failed reading local_sqlite_memory config %s: %s", path, e)
+            logger.warning("Failed reading mann_memory config %s: %s", path, e)
             return {}
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -1231,17 +1231,17 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
         self._auto_dream_interval_seconds = max(0, int(merged.get("auto_dream_interval_seconds", 86400)))
         self._auto_dream_limit = max(1, min(int(merged.get("auto_dream_limit", 48)), 100))
         self._assistant_handle = _clean_text(merged.get("assistant_handle", "default"), 120) or "default"
-        db_path = str(merged.get("db_path") or "$HERMES_HOME/local-sqlite-memory/memory.sqlite3")
+        db_path = str(merged.get("db_path") or "$HERMES_HOME/mann-memory/memory.sqlite3")
         db_path = db_path.replace("$HERMES_HOME", str(hermes_home)).replace("${HERMES_HOME}", str(hermes_home))
         self._store = _Store(Path(db_path))
         self._session_id = session_id or ""
         self._initialized = True
-        logger.info("Local SQLite memory initialized at %s", db_path)
+        logger.info("Mann_Memory initialized at %s", db_path)
 
     def system_prompt_block(self) -> str:
         return (
-            "Local SQLite Memory is active: private local SQLite memory with namespaces "
-            "default and user-defined workspaces. Use local_memory_search/context before "
+            "Mann_Memory is active: private local SQLite memory with namespaces "
+            "default and user-defined workspaces. Use mann_memory_search/context before "
             "answering questions that depend on past context. Do not mix namespaces unless explicitly requested."
         )
 
@@ -1251,7 +1251,7 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
         memories = self._store.search_memories(query, namespace=self._namespace, limit=self._context_limit)
         if not memories:
             return ""
-        lines = ["Relevant Local local memories:"]
+        lines = ["Relevant Mann_Memory memories:"]
         for m in memories[: self._context_limit]:
             lines.append(f"- [{m['id']}; {m['memory_type']}; {m['namespace']}] {m['content']}")
         return "\n".join(lines)
@@ -1270,7 +1270,7 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
             if _clean_text(assistant_content):
                 self._store.add_message(assistant_content, self._namespace, sid, assistant_peer["id"], "assistant", {"source": "sync_turn"})
         except Exception as e:
-            logger.warning("Local SQLite memory sync_turn failed: %s", e)
+            logger.warning("Mann_Memory sync_turn failed: %s", e)
 
     def _maybe_auto_dream(self, reason: str = "session_end") -> None:
         if not self._store or not self._auto_dream:
@@ -1287,13 +1287,13 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
             result["reason"] = reason
             self._store.record_auto_dream(self._namespace, result)
             logger.info(
-                "Local SQLite memory auto dream completed namespace=%s workspace_created=%s peer_created=%s",
+                "Mann_Memory auto dream completed namespace=%s workspace_created=%s peer_created=%s",
                 self._namespace,
                 result.get("workspace_dream", {}).get("created_conclusions"),
                 result.get("peer_dream", {}).get("created_conclusions"),
             )
         except Exception as e:
-            logger.debug("Local SQLite memory auto dream skipped/failed: %s", e)
+            logger.debug("Mann_Memory auto dream skipped/failed: %s", e)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         if not self._store:
@@ -1303,7 +1303,7 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                 try:
                     self._store.add_proposal(**prop)
                 except Exception as e:
-                    logger.debug("Failed adding Local memory proposal: %s", e)
+                    logger.debug("Failed adding Mann_Memory proposal: %s", e)
         self._maybe_auto_dream("session_end")
 
     def on_memory_write(self, action, target, content, metadata=None):
@@ -1339,9 +1339,9 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if not self._store:
-            return tool_error("Local SQLite memory is not initialized")
+            return tool_error("Mann_Memory is not initialized")
         try:
-            if tool_name == "local_memory_store":
+            if tool_name == "mann_memory_store":
                 content = args.get("content", "")
                 ns = args.get("namespace", self._namespace)
                 memory_type = args.get("memory_type", "fact")
@@ -1350,7 +1350,7 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                     prop = self._store.add_proposal(
                         content, namespace=ns, proposed_type=memory_type,
                         evidence="quarantined direct store via tool", source_session=self._session_id,
-                        confidence=float(args.get("confidence", 0.7)), metadata={"source": "local_memory_store"},
+                        confidence=float(args.get("confidence", 0.7)), metadata={"source": "mann_memory_store"},
                     )
                     return _json_result(quarantined=True, guard=guard, proposal=prop)
                 mem = self._store.add_memory(
@@ -1359,19 +1359,19 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                     importance=float(args.get("importance", 0.6)), metadata={"guard": guard},
                 )
                 return _json_result(memory=mem, guard=guard, quarantined=False)
-            if tool_name == "local_memory_search":
+            if tool_name == "mann_memory_search":
                 ns = args.get("namespace", self._namespace)
                 query = args.get("query", "")
                 memories = self._store.search_memories(query, namespace=ns, limit=int(args.get("limit", 8)))
                 turns = self._store.search_turns(query, namespace=ns, limit=5) if args.get("include_turns") else []
                 return _json_result(memories=memories, turns=turns)
-            if tool_name == "local_memory_context":
+            if tool_name == "mann_memory_context":
                 ns = args.get("namespace", self._namespace)
                 query = args.get("query", "")
                 memories = self._store.search_memories(query, namespace=ns, limit=int(args.get("limit", self._context_limit)))
                 context = "\n".join(f"- [{m['memory_type']}] {m['content']}" for m in memories)
                 return _json_result(context=context, memories=memories)
-            if tool_name == "local_memory_review":
+            if tool_name == "mann_memory_review":
                 action = (args.get("action") or "list").lower()
                 ns = args.get("namespace", self._namespace)
                 if action == "list":
@@ -1388,11 +1388,11 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                 if action in {"approve", "reject"}:
                     return _json_result(proposal=self._store.review_proposal(args.get("proposal_id", ""), action))
                 return tool_error("unknown review action")
-            if tool_name == "local_memory_forget":
+            if tool_name == "mann_memory_forget":
                 status = "deleted" if args.get("mode") == "delete" else "archived"
                 mem = self._store.update_memory(args.get("memory_id", ""), status=status)
                 return _json_result(memory=mem)
-            if tool_name == "local_memory_graph":
+            if tool_name == "mann_memory_graph":
                 action = (args.get("action") or "context").lower()
                 ns = args.get("namespace", self._namespace)
                 if action == "upsert_peer":
@@ -1444,9 +1444,9 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                         args.get("query", args.get("content", "")), namespace=ns, limit=int(args.get("limit", 8))
                     ))
                 return tool_error("unknown graph action")
-            if tool_name == "local_memory_status":
+            if tool_name == "mann_memory_status":
                 return _json_result(status=self._store.counts())
-            return tool_error(f"Unknown Local SQLite memory tool: {tool_name}")
+            return tool_error(f"Unknown Mann_Memory tool: {tool_name}")
         except Exception as e:
             return tool_error(str(e))
 
