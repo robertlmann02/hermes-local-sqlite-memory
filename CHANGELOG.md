@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3 - 2026-06-09
+
+- Add deterministic Memory Guard scoring for manual proposals, auto-proposals, and direct memory-store writes.
+- Quarantine suspicious memory candidates with `status=quarantined` and guard metadata instead of mixing them into the normal pending review queue.
+- Detect prompt-injection language, possible secrets, cross-namespace identity contamination, and imperative system-instruction style memories.
+- Add review-list status filtering for quarantined proposals plus CLI `--status quarantined` support.
+- Add regression tests covering quarantine, normal proposals, direct-store quarantine, and session-end auto-proposal quarantine.
+
 ## 0.1.2 - 2026-06-07
 
 - Add built-in opportunistic self-maintenance so active assistants can run cron-style cleanup plus workspace/peer dreaming from the provider's session-end hook.

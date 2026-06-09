@@ -45,7 +45,7 @@ def local_sqlite_memory_command(args):
         elif args.review_action == "propose":
             payload = {"action": "propose", "content": args.content, "namespace": args.namespace, "memory_type": args.memory_type}
         else:
-            payload = {"action": "list", "namespace": args.namespace, "limit": args.limit}
+            payload = {"action": "list", "namespace": args.namespace, "limit": args.limit, "status": args.status}
         _print(json.loads(p.handle_tool_call("local_memory_review", payload)))
     elif cmd == "forget":
         _print(json.loads(p.handle_tool_call("local_memory_forget", {
@@ -91,6 +91,7 @@ def register_cli(subparser) -> None:
     review.add_argument("--namespace", default="default")
     review.add_argument("--memory-type", default="fact", choices=["fact", "preference", "decision", "project", "infrastructure", "handoff", "identity", "other"])
     review.add_argument("--limit", type=int, default=20)
+    review.add_argument("--status", default="pending", choices=["pending", "quarantined", "approved", "rejected", "all"], help="Proposal status filter for review list")
     review.set_defaults(func=local_sqlite_memory_command)
 
     forget = subs.add_parser("forget", help="Archive or delete a memory")

@@ -8,6 +8,7 @@ A local-first SQLite/FTS5 memory provider for [Hermes Agent](https://hermes-agen
 - Durable memories with type, confidence, importance, status, and namespace fields.
 - Synced conversation turns for searchable recall.
 - Review queue: propose, list, approve, reject, archive/delete.
+- Memory Guard: deterministic poisoning/secret-risk scoring quarantines suspicious proposals away from the normal pending queue.
 - Graph-style workspace, peer, session, message, conclusion, and representation tables.
 - Deterministic local consolidation pass for repeated recent patterns.
 - Opportunistic self-maintenance: cleanup + workspace/peer dreaming can run at session end without an external cron job.
@@ -76,10 +77,22 @@ hermes local_sqlite_memory status
 hermes local_sqlite_memory remember "User prefers concise status updates." --namespace default --memory-type preference
 hermes local_sqlite_memory search "concise status" --namespace default
 hermes local_sqlite_memory review list --namespace default
+hermes local_sqlite_memory review list --namespace default --status quarantined
 hermes local_sqlite_memory dream --namespace default
 ```
 
 The graph tool also exposes `cleanup` and `self_maintain` actions for manual or integration-level maintenance.
+
+## Memory Guard quarantine
+
+Every manual proposal, auto-proposal, and direct `local_memory_store` write is scored by a local deterministic guard before it can become durable memory. The guard flags patterns associated with:
+
+- prompt-injection language such as ignoring or overriding system/developer/user instructions;
+- possible secrets such as API keys, access tokens, or private-key material;
+- cross-namespace identity contamination such as merging assistant identities;
+- imperative system-instruction style memories.
+
+Suspicious direct stores are not written to active memory. They are placed in the review queue with `status=quarantined` and guard metadata explaining the score/reasons. Normal review lists still show only `pending` items by default; inspect quarantined entries explicitly with `local_memory_review` status `quarantined` or the CLI `--status quarantined` option.
 
 ## Development checks
 
