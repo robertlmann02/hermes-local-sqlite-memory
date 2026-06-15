@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-mann-memory"
-version = "0.1.5"
-description = "Mann_Memory SQLite/FTS5 memory provider for Hermes Agent with review workflow, Memory Guard quarantine, namespaces, graph context, memory inspection/control, and deterministic consolidation."
+version = "0.1.6"
+description = "Mann_Memory SQLite/FTS5 memory provider for Hermes Agent with review workflow, Memory Guard quarantine, namespaces, graph context, memory inspection/control, portability backup/export/import, and deterministic consolidation."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

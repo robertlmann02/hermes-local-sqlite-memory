@@ -462,3 +462,82 @@ def test_manage_lists_shows_updates_and_archives_memory(tmp_path):
     }))
     assert [m["id"] for m in all_rows["memories"]] == [first["id"]]
     assert second["id"].startswith("dlm_")
+
+
+
+def test_portability_jsonl_export_dry_run_import_and_apply(tmp_path):
+    p = _provider(tmp_path)
+    first = json.loads(p.handle_tool_call("mann_memory_store", {
+        "content": "The user wants portable JSONL memory exports.",
+        "memory_type": "preference",
+        "namespace": "default",
+    }))["memory"]
+    p.handle_tool_call("mann_memory_graph", {
+        "action": "add_message",
+        "namespace": "default",
+        "session_id": "portable-session",
+        "role": "user",
+        "content": "Portability should preserve graph messages too.",
+    })
+    export_path = tmp_path / "memory.jsonl"
+    exported = json.loads(p.handle_tool_call("mann_memory_portability", {
+        "action": "export_jsonl",
+        "path": str(export_path),
+        "namespace": "default",
+    }))["export"]
+    assert exported["records"] >= 2
+    assert export_path.exists()
+    assert '"record_type": "manifest"' in export_path.read_text()
+
+    duplicate_preview = json.loads(p.handle_tool_call("mann_memory_portability", {
+        "action": "import_jsonl",
+        "path": str(export_path),
+        "dry_run": True,
+    }))["import_result"]
+    assert duplicate_preview["dry_run"] is True
+    assert duplicate_preview["stats"]["duplicates"] >= 1
+    assert duplicate_preview["previews"]
+
+    restored = LocalSQLiteMemoryProvider({"db_path": str(tmp_path / "restored.sqlite3"), "context_limit": "5"})
+    restored.initialize("restore-jsonl", hermes_home=str(tmp_path), platform="cli")
+    applied = json.loads(restored.handle_tool_call("mann_memory_portability", {
+        "action": "import_jsonl",
+        "path": str(export_path),
+        "dry_run": False,
+    }))["import_result"]
+    assert applied["stats"]["inserted"] >= 2
+    search = json.loads(restored.handle_tool_call("mann_memory_search", {
+        "query": "portable JSONL",
+        "namespace": "default",
+    }))
+    assert search["memories"][0]["id"] == first["id"]
+
+
+def test_portability_sqlite_backup_restore_and_migrations(tmp_path):
+    p = _provider(tmp_path)
+    original = json.loads(p.handle_tool_call("mann_memory_store", {
+        "content": "SQLite backups should restore complete memory state.",
+        "memory_type": "decision",
+    }))["memory"]
+    migrations = json.loads(p.handle_tool_call("mann_memory_portability", {"action": "migrations"}))
+    assert migrations["schema_version"] >= 1
+    assert migrations["migrations"][0]["name"] == "initial_portable_schema"
+
+    backup_path = tmp_path / "backup.sqlite3"
+    backup = json.loads(p.handle_tool_call("mann_memory_portability", {
+        "action": "backup_sqlite",
+        "path": str(backup_path),
+    }))["backup"]
+    assert backup_path.exists()
+    assert backup["bytes"] > 0
+
+    p.handle_tool_call("mann_memory_manage", {"action": "delete", "memory_id": original["id"]})
+    assert json.loads(p.handle_tool_call("mann_memory_search", {"query": "SQLite backups"}))["memories"] == []
+
+    restored = json.loads(p.handle_tool_call("mann_memory_portability", {
+        "action": "restore_sqlite",
+        "path": str(backup_path),
+    }))["restore"]
+    assert restored["table_counts"]["memories"] >= 1
+    search = json.loads(p.handle_tool_call("mann_memory_search", {"query": "SQLite backups"}))
+    assert search["memories"][0]["id"] == original["id"]

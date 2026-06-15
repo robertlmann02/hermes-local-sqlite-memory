@@ -37,12 +37,17 @@ except ModuleNotFoundError:  # Allow standalone tests/package imports outside He
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 # Namespaces are intentionally user-defined; values are sanitized by _safe_namespace.
 _ALLOWED_TYPES = {"fact", "preference", "decision", "project", "infrastructure", "handoff", "identity", "other"}
 _DEFAULT_NAMESPACE = "default"
 _MAX_CONTEXT_RESULTS = 8
+_SCHEMA_VERSION = 1
+_EXPORT_TABLES = (
+    "memories", "turns", "review_queue", "workspaces", "peers",
+    "memory_sessions", "messages", "conclusions", "representations",
+)
 
 
 def _now() -> str:
@@ -353,6 +358,12 @@ class _Store:
                     metadata TEXT DEFAULT '{}',
                     UNIQUE(namespace, peer_id, kind)
                 );
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL,
+                    metadata TEXT DEFAULT '{}'
+                );
                 CREATE INDEX IF NOT EXISTS idx_memories_ns_status ON memories(namespace, status);
                 CREATE INDEX IF NOT EXISTS idx_review_ns_status ON review_queue(namespace, status);
                 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
@@ -369,6 +380,191 @@ class _Store:
                 "INSERT OR IGNORE INTO workspaces(id, namespace, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?)",
                 (f"ws_{_DEFAULT_NAMESPACE}", _DEFAULT_NAMESPACE, ts, ts, json.dumps({"source": "default_namespace"}, ensure_ascii=False)),
             )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at, metadata) VALUES (?, ?, ?, ?)",
+                (_SCHEMA_VERSION, "initial_portable_schema", ts, json.dumps({"package_version": __version__}, ensure_ascii=False)),
+            )
+
+    def schema_migrations(self) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM schema_migrations ORDER BY version ASC").fetchall()
+        return [dict(r) for r in rows]
+
+    def _validate_export_table(self, table: str) -> str:
+        if table not in _EXPORT_TABLES:
+            raise ValueError(f"unsupported export table: {table}")
+        return table
+
+    def _all_table_counts(self, conn: sqlite3.Connection) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for table in _EXPORT_TABLES:
+            counts[table] = int(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
+        return counts
+
+    def _table_columns(self, conn: sqlite3.Connection, table: str) -> set[str]:
+        table = self._validate_export_table(table)
+        return {str(r["name"]) for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def export_jsonl(self, output_path: str, namespace: str = "", include_archived: bool = True) -> dict:
+        path = Path(output_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        namespace = _safe_namespace(namespace) if namespace else ""
+        include_archived = bool(include_archived)
+        exported = 0
+        table_counts: dict[str, int] = {}
+        started = _now()
+        with self._lock, self._connect() as conn, path.open("w", encoding="utf-8") as fh:
+            header = {
+                "record_type": "manifest",
+                "format": "mann_memory_jsonl",
+                "format_version": 1,
+                "schema_version": _SCHEMA_VERSION,
+                "package_version": __version__,
+                "exported_at": started,
+                "namespace": namespace or None,
+                "include_archived": include_archived,
+                "tables": list(_EXPORT_TABLES),
+            }
+            fh.write(json.dumps(header, ensure_ascii=False, sort_keys=True) + "\n")
+            for table in _EXPORT_TABLES:
+                where: list[str] = []
+                params: list[Any] = []
+                if namespace and table in {"memories", "turns", "review_queue", "workspaces", "peers", "memory_sessions", "messages", "conclusions", "representations"}:
+                    where.append("namespace = ?")
+                    params.append(namespace)
+                if not include_archived and table in {"memories", "conclusions"}:
+                    where.append("status = 'active'")
+                sql = f"SELECT * FROM {table}" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id"
+                rows = conn.execute(sql, params).fetchall()
+                table_counts[table] = len(rows)
+                for row in rows:
+                    fh.write(json.dumps({"record_type": "row", "table": table, "row": dict(row)}, ensure_ascii=False, sort_keys=True) + "\n")
+                    exported += 1
+        return {"path": str(path), "records": exported, "table_counts": table_counts, "schema_version": _SCHEMA_VERSION, "exported_at": started}
+
+    def backup_sqlite(self, output_path: str) -> dict:
+        path = Path(output_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock, self._connect() as src:
+            src.execute("PRAGMA wal_checkpoint(FULL)")
+            with sqlite3.connect(str(path)) as dst:
+                src.backup(dst)
+            counts = self._all_table_counts(src)
+        return {"path": str(path), "bytes": path.stat().st_size, "table_counts": counts, "schema_version": _SCHEMA_VERSION, "created_at": _now()}
+
+    def restore_sqlite(self, input_path: str) -> dict:
+        path = Path(input_path).expanduser()
+        if not path.exists():
+            raise ValueError(f"backup not found: {path}")
+        backup_before = self.db_path.with_name(self.db_path.name + f".pre-restore-{int(time.time())}.bak")
+        with self._lock:
+            if self.db_path.exists():
+                with sqlite3.connect(str(self.db_path)) as current, sqlite3.connect(str(backup_before)) as pre_restore:
+                    current.execute("PRAGMA wal_checkpoint(FULL)")
+                    current.backup(pre_restore)
+            with sqlite3.connect(str(path)) as src, sqlite3.connect(str(self.db_path)) as dst:
+                src.backup(dst)
+            self._init_db()
+            self.rebuild_fts()
+            with self._connect() as conn:
+                counts = self._all_table_counts(conn)
+        return {"restored_from": str(path), "pre_restore_backup": str(backup_before), "table_counts": counts, "schema_version": _SCHEMA_VERSION}
+
+    def _row_conflicts(self, conn: sqlite3.Connection, table: str, row: dict) -> list[str]:
+        conflicts: list[str] = []
+        row_id = row.get("id")
+        if row_id and conn.execute(f"SELECT 1 FROM {table} WHERE id = ? LIMIT 1", (row_id,)).fetchone():
+            conflicts.append("id_exists")
+        if table == "memories":
+            existing = conn.execute(
+                "SELECT id FROM memories WHERE namespace = ? AND lower(content) = lower(?) AND status != 'deleted' LIMIT 1",
+                (row.get("namespace", _DEFAULT_NAMESPACE), row.get("content", "")),
+            ).fetchone()
+            if existing and existing["id"] != row_id:
+                conflicts.append("duplicate_memory_content")
+        if table == "review_queue":
+            existing = conn.execute(
+                "SELECT id FROM review_queue WHERE namespace = ? AND lower(content) = lower(?) AND status IN ('pending','quarantined') LIMIT 1",
+                (row.get("namespace", _DEFAULT_NAMESPACE), row.get("content", "")),
+            ).fetchone()
+            if existing and existing["id"] != row_id:
+                conflicts.append("duplicate_open_proposal")
+        return conflicts
+
+    def preview_jsonl_import(self, input_path: str, namespace: str = "") -> dict:
+        return self.import_jsonl(input_path, namespace=namespace, dry_run=True)
+
+    def import_jsonl(self, input_path: str, namespace: str = "", dry_run: bool = True, overwrite: bool = False) -> dict:
+        path = Path(input_path).expanduser()
+        if not path.exists():
+            raise ValueError(f"import file not found: {path}")
+        namespace = _safe_namespace(namespace) if namespace else ""
+        stats = {"seen": 0, "insertable": 0, "duplicates": 0, "conflicts": 0, "inserted": 0, "overwritten": 0, "skipped": 0}
+        table_counts: dict[str, int] = {}
+        previews: list[dict] = []
+        with self._lock, self._connect() as conn, path.open("r", encoding="utf-8") as fh:
+            for line_no, line in enumerate(fh, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                if rec.get("record_type") != "row":
+                    continue
+                table = self._validate_export_table(rec.get("table", ""))
+                row = dict(rec.get("row") or {})
+                if namespace and "namespace" in row:
+                    row["namespace"] = namespace
+                stats["seen"] += 1
+                table_counts[table] = table_counts.get(table, 0) + 1
+                conflicts = self._row_conflicts(conn, table, row)
+                if "id_exists" in conflicts:
+                    stats["duplicates"] += 1
+                non_id_conflicts = [c for c in conflicts if c != "id_exists"]
+                if non_id_conflicts:
+                    stats["conflicts"] += 1
+                if conflicts and not overwrite:
+                    stats["skipped"] += 1
+                    if len(previews) < 25:
+                        previews.append({"line": line_no, "table": table, "id": row.get("id"), "namespace": row.get("namespace"), "conflicts": conflicts, "content": _clean_text(row.get("content", ""), 180)})
+                    continue
+                stats["insertable"] += 1
+                if dry_run:
+                    continue
+                valid_columns = self._table_columns(conn, table)
+                columns = [c for c in row.keys() if c in valid_columns]
+                if not columns:
+                    stats["skipped"] += 1
+                    continue
+                unknown_columns = sorted(set(row.keys()) - valid_columns)
+                if unknown_columns:
+                    if len(previews) < 25:
+                        previews.append({"line": line_no, "table": table, "id": row.get("id"), "conflicts": ["unknown_columns_ignored"], "unknown_columns": unknown_columns})
+                placeholders = ", ".join("?" for _ in columns)
+                col_sql = ", ".join(f'"{c}"' for c in columns)
+                verb = "INSERT OR REPLACE" if overwrite else "INSERT OR IGNORE"
+                conn.execute(f"{verb} INTO {table}({col_sql}) VALUES ({placeholders})", [row[c] for c in columns])
+                if conflicts and overwrite:
+                    stats["overwritten"] += 1
+                else:
+                    stats["inserted"] += 1
+            if not dry_run:
+                self._rebuild_fts_locked(conn)
+        return {"path": str(path), "dry_run": bool(dry_run), "overwrite": bool(overwrite), "namespace_override": namespace or None, "stats": stats, "table_counts": table_counts, "previews": previews}
+
+    def _rebuild_fts_locked(self, conn: sqlite3.Connection) -> None:
+        conn.execute("DELETE FROM memories_fts")
+        conn.execute("INSERT INTO memories_fts(id, namespace, memory_type, content, source) SELECT id, namespace, memory_type, content, COALESCE(source, '') FROM memories WHERE status = 'active'")
+        conn.execute("DELETE FROM turns_fts")
+        conn.execute("INSERT INTO turns_fts(id, namespace, session_id, content) SELECT id, namespace, COALESCE(session_id, ''), 'User: ' || COALESCE(user_content, '') || char(10) || 'Assistant: ' || COALESCE(assistant_content, '') FROM turns")
+        conn.execute("DELETE FROM messages_fts")
+        conn.execute("INSERT INTO messages_fts(id, namespace, session_id, peer_id, role, content) SELECT id, namespace, COALESCE(session_id, ''), COALESCE(peer_id, ''), role, content FROM messages")
+        conn.execute("DELETE FROM conclusions_fts")
+        conn.execute("INSERT INTO conclusions_fts(id, namespace, session_id, peer_id, scope, content) SELECT id, namespace, COALESCE(session_id, ''), COALESCE(peer_id, ''), scope, content FROM conclusions WHERE status = 'active'")
+
+    def rebuild_fts(self) -> None:
+        with self._lock, self._connect() as conn:
+            self._rebuild_fts_locked(conn)
+
     def add_memory(self, content: str, namespace: str = _DEFAULT_NAMESPACE, memory_type: str = "fact",
                    source: str = "tool", source_session: str = "", confidence: float = 0.7,
                    importance: float = 0.6, metadata: Optional[dict] = None) -> dict:
@@ -1213,6 +1409,24 @@ LOCAL_MEMORY_MANAGE_SCHEMA = {
 }
 
 
+LOCAL_MEMORY_PORTABILITY_SCHEMA = {
+    "name": "mann_memory_portability",
+    "description": "Backup, export, restore, import, and inspect schema migration history for private Mann_Memory.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["export_jsonl", "backup_sqlite", "migrations", "restore_sqlite", "import_jsonl"]},
+            "path": {"type": "string", "description": "Input or output file path."},
+            "namespace": {"type": "string", "description": "Optional namespace filter/override."},
+            "include_archived": {"type": "boolean", "description": "Export archived/deleted rows too; default true."},
+            "dry_run": {"type": "boolean", "description": "For import_jsonl, preview duplicates/conflicts without writing; default true."},
+            "overwrite": {"type": "boolean", "description": "For import_jsonl, replace existing rows with matching IDs; default false."},
+        },
+        "required": ["action"],
+    },
+}
+
+
 LOCAL_MEMORY_STATUS_SCHEMA = {
     "name": "mann_memory_status",
     "description": "Show private local Mann_Memory database path and counts by namespace/status.",
@@ -1394,6 +1608,7 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
             LOCAL_MEMORY_FORGET_SCHEMA,
             LOCAL_MEMORY_MANAGE_SCHEMA,
             LOCAL_MEMORY_HONCHO_SCHEMA,
+            LOCAL_MEMORY_PORTABILITY_SCHEMA,
             LOCAL_MEMORY_STATUS_SCHEMA,
         ]
 
@@ -1533,6 +1748,36 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                         args.get("query", args.get("content", "")), namespace=ns, limit=int(args.get("limit", 8))
                     ))
                 return tool_error("unknown graph action")
+            if tool_name == "mann_memory_portability":
+                action = (args.get("action") or "").lower()
+                ns = args.get("namespace", "")
+                path = args.get("path", "")
+                if action == "export_jsonl":
+                    if not path:
+                        return tool_error("path is required for export_jsonl")
+                    return _json_result(export=self._store.export_jsonl(
+                        path, namespace=ns, include_archived=args.get("include_archived", True)
+                    ))
+                if action == "backup_sqlite":
+                    if not path:
+                        return tool_error("path is required for backup_sqlite")
+                    return _json_result(backup=self._store.backup_sqlite(path))
+                if action == "migrations":
+                    return _json_result(schema_version=_SCHEMA_VERSION, migrations=self._store.schema_migrations())
+                if action == "restore_sqlite":
+                    if not path:
+                        return tool_error("path is required for restore_sqlite")
+                    return _json_result(restore=self._store.restore_sqlite(path))
+                if action == "import_jsonl":
+                    if not path:
+                        return tool_error("path is required for import_jsonl")
+                    return _json_result(import_result=self._store.import_jsonl(
+                        path,
+                        namespace=ns,
+                        dry_run=str(args.get("dry_run", True)).lower() not in {"0", "false", "no"},
+                        overwrite=bool(args.get("overwrite", False)),
+                    ))
+                return tool_error("unknown portability action")
             if tool_name == "mann_memory_status":
                 return _json_result(status=self._store.counts())
             return tool_error(f"Unknown Mann_Memory tool: {tool_name}")

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6 - 2026-06-15
+
+- Add `mann_memory_portability` for JSONL export, consistent SQLite backup, schema migration history, SQLite restore, and JSONL import.
+- Add CLI `hermes mann_memory portability ...` commands, including dry-run import previews with duplicate/conflict summaries.
+- Add `schema_migrations` table and migration-history reporting for portability/audit readiness.
+- Rebuild FTS indexes after JSONL import or SQLite restore so restored memories are immediately searchable.
+- Add regression coverage for JSONL export/import preview/apply, SQLite backup/restore, and migration-history reporting.
+
 ## 0.1.5 - 2026-06-15
 
 - Add `mann_memory_manage` for operator visibility/control of durable memory contents: list, show, update, archive, and delete by ID.

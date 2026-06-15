@@ -13,7 +13,8 @@ A local-first SQLite/FTS5 memory provider for [Hermes Agent](https://hermes-agen
 - Deterministic local consolidation pass for repeated recent patterns.
 - Opportunistic self-maintenance: cleanup + workspace/peer dreaming can run at session end without an external cron job.
 - User-defined namespaces so different assistants/users stay separated.
-- Runtime tools for store/search/context/review/forget/status/graph plus durable-memory inspection/control operations.
+- Runtime tools for store/search/context/review/forget/status/graph plus durable-memory inspection/control and portability operations.
+- JSONL export/import, consistent SQLite backups, restore, schema migration history, and dry-run import conflict previews.
 - No vector database, embedding model, or cloud memory dependency.
 
 ## Install as a Hermes memory plugin
@@ -69,6 +70,7 @@ This is opportunistic: it runs when Hermes calls the provider's session-end hook
 - `mann_memory_forget`
 - `mann_memory_manage`
 - `mann_memory_graph`
+- `mann_memory_portability`
 - `mann_memory_status`
 
 ## CLI examples
@@ -83,6 +85,12 @@ hermes mann_memory memories list --namespace default --status active
 hermes mann_memory memories show dlm_example1234
 hermes mann_memory memories update dlm_example1234 --content "Corrected durable memory text." --memory-type fact
 hermes mann_memory memories archive dlm_example1234
+hermes mann_memory portability export-jsonl ~/mann-memory-export.jsonl --namespace default
+hermes mann_memory portability backup-sqlite ~/mann-memory-backup.sqlite3
+hermes mann_memory portability migrations
+hermes mann_memory portability import-jsonl ~/mann-memory-export.jsonl --dry-run
+hermes mann_memory portability import-jsonl ~/mann-memory-export.jsonl --apply
+hermes mann_memory portability restore-sqlite ~/mann-memory-backup.sqlite3
 hermes mann_memory dream --namespace default
 ```
 
@@ -102,6 +110,20 @@ Supported actions:
 - `delete` — mark one memory deleted and remove it from active recall.
 
 Archived and deleted memories are excluded from normal `mann_memory_search`/context recall. Use `status=all` only for operator review/audit.
+
+## Backup, export, restore, and migration history
+
+Use `mann_memory_portability` or the `hermes mann_memory portability ...` CLI group before moving data between profiles/hosts or before expanding memory features.
+
+Supported actions:
+
+- `export_jsonl` / `export-jsonl` — writes a line-delimited export with a manifest plus rows from durable memory, review, turn, and graph tables. Use `--namespace` to filter to one namespace, and `--active-only` to omit archived/deleted memories and conclusions.
+- `backup_sqlite` / `backup-sqlite` — creates a consistent SQLite backup using the SQLite backup API after a WAL checkpoint.
+- `migrations` — reports the local `schema_migrations` history and current schema version.
+- `restore_sqlite` / `restore-sqlite` — restores the active database from a SQLite backup, writes a pre-restore backup beside the live DB, and rebuilds FTS indexes.
+- `import_jsonl` / `import-jsonl` — previews or applies a JSONL import. Dry-run is the default and reports duplicate IDs plus content-level memory/proposal conflicts before anything is written.
+
+Import behavior is conservative by default: rows with duplicate IDs or detected content conflicts are skipped unless `--overwrite` is explicitly provided. Use `--namespace <name>` during import to remap all namespaced rows into a new namespace.
 
 ## Memory Guard quarantine
 

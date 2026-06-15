@@ -84,8 +84,21 @@ def mann_memory_command(args):
             "peer_id": args.peer_id,
             "limit": args.limit,
         })))
+    elif cmd == "portability":
+        payload = {"action": args.portability_action}
+        if getattr(args, "path", None):
+            payload["path"] = str(args.path)
+        if getattr(args, "namespace", ""):
+            payload["namespace"] = args.namespace
+        if hasattr(args, "include_archived"):
+            payload["include_archived"] = args.include_archived
+        if hasattr(args, "dry_run"):
+            payload["dry_run"] = args.dry_run
+        if hasattr(args, "overwrite"):
+            payload["overwrite"] = args.overwrite
+        _print(json.loads(p.handle_tool_call("mann_memory_portability", payload)))
     else:
-        print("Usage: hermes mann_memory {status|search|remember|review|memories|forget|dream}")
+        print("Usage: hermes mann_memory {status|search|remember|review|memories|forget|dream|portability}")
 
 
 def register_cli(subparser) -> None:
@@ -155,5 +168,29 @@ def register_cli(subparser) -> None:
     dream.add_argument("--peer-id", default="", help="Optional peer id to dream for; blank means workspace")
     dream.add_argument("--limit", type=int, default=24, help="Recent messages to inspect")
     dream.set_defaults(func=mann_memory_command)
+
+    portability = subs.add_parser("portability", help="Export, back up, restore, import, and inspect migrations")
+    portability_subs = portability.add_subparsers(dest="portability_action", required=True)
+    export_jsonl = portability_subs.add_parser("export-jsonl", help="Export Mann_Memory rows as JSONL")
+    export_jsonl.set_defaults(portability_action="export_jsonl", func=mann_memory_command)
+    export_jsonl.add_argument("path", type=Path)
+    export_jsonl.add_argument("--namespace", default="", help="Optional namespace filter")
+    export_jsonl.add_argument("--include-archived", action="store_true", default=True, help="Include archived/deleted rows (default)")
+    export_jsonl.add_argument("--active-only", dest="include_archived", action="store_false", help="Export only active status rows where supported")
+    backup_sqlite = portability_subs.add_parser("backup-sqlite", help="Create a consistent SQLite backup")
+    backup_sqlite.set_defaults(portability_action="backup_sqlite", func=mann_memory_command)
+    backup_sqlite.add_argument("path", type=Path)
+    migrations = portability_subs.add_parser("migrations", help="Show schema migration history")
+    migrations.set_defaults(portability_action="migrations", func=mann_memory_command)
+    restore_sqlite = portability_subs.add_parser("restore-sqlite", help="Restore the SQLite DB from a backup file")
+    restore_sqlite.set_defaults(portability_action="restore_sqlite", func=mann_memory_command)
+    restore_sqlite.add_argument("path", type=Path)
+    import_jsonl = portability_subs.add_parser("import-jsonl", help="Import JSONL export; dry-run previews conflicts by default")
+    import_jsonl.set_defaults(portability_action="import_jsonl", func=mann_memory_command)
+    import_jsonl.add_argument("path", type=Path)
+    import_jsonl.add_argument("--namespace", default="", help="Override namespace while importing")
+    import_jsonl.add_argument("--dry-run", dest="dry_run", action="store_true", default=True, help="Preview without writing (default)")
+    import_jsonl.add_argument("--apply", dest="dry_run", action="store_false", help="Actually import rows")
+    import_jsonl.add_argument("--overwrite", action="store_true", help="Replace rows with matching IDs")
 
     subparser.set_defaults(func=mann_memory_command)
