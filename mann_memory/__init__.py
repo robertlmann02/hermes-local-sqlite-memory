@@ -12,6 +12,7 @@ supports three phases for a local-first memory workflow:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -37,7 +38,7 @@ except ModuleNotFoundError:  # Allow standalone tests/package imports outside He
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 # Namespaces are intentionally user-defined; values are sanitized by _safe_namespace.
 _ALLOWED_TYPES = {"fact", "preference", "decision", "project", "infrastructure", "handoff", "identity", "other"}
@@ -451,6 +452,64 @@ class _Store:
                 src.backup(dst)
             counts = self._all_table_counts(src)
         return {"path": str(path), "bytes": path.stat().st_size, "table_counts": counts, "schema_version": _SCHEMA_VERSION, "created_at": _now()}
+
+    def _sha256_file(self, path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def export_backup(self, output_dir: str, namespace: str = "", include_archived: bool = True) -> dict:
+        """Create a portable backup bundle with JSONL export, SQLite snapshot, and manifest."""
+        base = Path(output_dir).expanduser()
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        if base.suffix:
+            bundle_dir = base.with_suffix("")
+        else:
+            bundle_dir = base
+        if bundle_dir.exists() and any(bundle_dir.iterdir()):
+            bundle_dir = bundle_dir / f"mann-memory-export-backup-{ts}"
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        ns = _safe_namespace(namespace) if namespace else "all"
+        stem = f"mann-memory-{ns}-{ts}"
+        jsonl_path = bundle_dir / f"{stem}.jsonl"
+        sqlite_path = bundle_dir / f"{stem}.sqlite3"
+        jsonl = self.export_jsonl(str(jsonl_path), namespace=namespace, include_archived=include_archived)
+        sqlite_backup = self.backup_sqlite(str(sqlite_path))
+        files = {
+            "jsonl": {"path": str(jsonl_path), "bytes": jsonl_path.stat().st_size, "sha256": self._sha256_file(jsonl_path)},
+            "sqlite": {"path": str(sqlite_path), "bytes": sqlite_path.stat().st_size, "sha256": self._sha256_file(sqlite_path)},
+        }
+        manifest = {
+            "format": "mann_memory_export_backup",
+            "format_version": 1,
+            "schema_version": _SCHEMA_VERSION,
+            "package_version": __version__,
+            "created_at": _now(),
+            "namespace": None if ns == "all" else ns,
+            "include_archived": bool(include_archived),
+            "jsonl_export": jsonl,
+            "sqlite_backup": sqlite_backup,
+            "files": files,
+        }
+        manifest_path = bundle_dir / f"{stem}.manifest.json"
+        checksums_path = bundle_dir / f"{stem}.sha256"
+        manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        checksums_path.write_text("".join(f"{info['sha256']}  {Path(info['path']).name}\n" for info in files.values()), encoding="utf-8")
+        extra_files = {
+            "manifest": {"path": str(manifest_path), "bytes": manifest_path.stat().st_size, "sha256": self._sha256_file(manifest_path)},
+            "checksums": {"path": str(checksums_path), "bytes": checksums_path.stat().st_size, "sha256": self._sha256_file(checksums_path)},
+        }
+        return {
+            "bundle_dir": str(bundle_dir),
+            "manifest_path": str(manifest_path),
+            "checksums_path": str(checksums_path),
+            "schema_version": _SCHEMA_VERSION,
+            "files": {**files, **extra_files},
+            "jsonl_export": jsonl,
+            "sqlite_backup": sqlite_backup,
+        }
 
     def restore_sqlite(self, input_path: str) -> dict:
         path = Path(input_path).expanduser()
@@ -1415,7 +1474,7 @@ LOCAL_MEMORY_PORTABILITY_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["export_jsonl", "backup_sqlite", "migrations", "restore_sqlite", "import_jsonl"]},
+            "action": {"type": "string", "enum": ["export_jsonl", "backup_sqlite", "export_backup", "migrations", "restore_sqlite", "import_jsonl"]},
             "path": {"type": "string", "description": "Input or output file path."},
             "namespace": {"type": "string", "description": "Optional namespace filter/override."},
             "include_archived": {"type": "boolean", "description": "Export archived/deleted rows too; default true."},
@@ -1762,6 +1821,12 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                     if not path:
                         return tool_error("path is required for backup_sqlite")
                     return _json_result(backup=self._store.backup_sqlite(path))
+                if action == "export_backup":
+                    if not path:
+                        return tool_error("path is required for export_backup")
+                    return _json_result(export_backup=self._store.export_backup(
+                        path, namespace=ns, include_archived=args.get("include_archived", True)
+                    ))
                 if action == "migrations":
                     return _json_result(schema_version=_SCHEMA_VERSION, migrations=self._store.schema_migrations())
                 if action == "restore_sqlite":

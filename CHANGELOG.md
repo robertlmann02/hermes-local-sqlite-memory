@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.7 - 2026-06-15
+
+- Add one-command `export_backup` portability action that creates a portable backup bundle containing JSONL export, SQLite snapshot, manifest, and SHA-256 checksums.
+- Add CLI `hermes mann_memory portability export-backup ...` for operator-friendly backup creation.
+- Add regression coverage that verifies bundle files, manifest metadata, and checksums are produced.
+
 ## 0.1.6 - 2026-06-15
 
 - Add `mann_memory_portability` for JSONL export, consistent SQLite backup, schema migration history, SQLite restore, and JSONL import.

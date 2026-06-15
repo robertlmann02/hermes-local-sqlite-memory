@@ -1,5 +1,5 @@
 name: mann_memory
-version: 0.1.6
+version: 0.1.7
 description: "Mann_Memory — private SQLite/FTS5 memory provider with review workflow, Memory Guard quarantine, namespaces, local graph context, memory inspection/control, portability backup/export/import, and deterministic consolidation."
 hooks:
   - sync_turn

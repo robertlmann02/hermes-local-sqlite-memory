@@ -14,7 +14,7 @@ A local-first SQLite/FTS5 memory provider for [Hermes Agent](https://hermes-agen
 - Opportunistic self-maintenance: cleanup + workspace/peer dreaming can run at session end without an external cron job.
 - User-defined namespaces so different assistants/users stay separated.
 - Runtime tools for store/search/context/review/forget/status/graph plus durable-memory inspection/control and portability operations.
-- JSONL export/import, consistent SQLite backups, restore, schema migration history, and dry-run import conflict previews.
+- JSONL export/import, one-command export-backup bundles, consistent SQLite backups, restore, schema migration history, and dry-run import conflict previews.
 - No vector database, embedding model, or cloud memory dependency.
 
 ## Install as a Hermes memory plugin
@@ -87,6 +87,7 @@ hermes mann_memory memories update dlm_example1234 --content "Corrected durable 
 hermes mann_memory memories archive dlm_example1234
 hermes mann_memory portability export-jsonl ~/mann-memory-export.jsonl --namespace default
 hermes mann_memory portability backup-sqlite ~/mann-memory-backup.sqlite3
+hermes mann_memory portability export-backup ~/mann-memory-backup-bundle --namespace default
 hermes mann_memory portability migrations
 hermes mann_memory portability import-jsonl ~/mann-memory-export.jsonl --dry-run
 hermes mann_memory portability import-jsonl ~/mann-memory-export.jsonl --apply
@@ -119,6 +120,7 @@ Supported actions:
 
 - `export_jsonl` / `export-jsonl` — writes a line-delimited export with a manifest plus rows from durable memory, review, turn, and graph tables. Use `--namespace` to filter to one namespace, and `--active-only` to omit archived/deleted memories and conclusions.
 - `backup_sqlite` / `backup-sqlite` — creates a consistent SQLite backup using the SQLite backup API after a WAL checkpoint.
+- `export_backup` / `export-backup` — creates a portable backup bundle directory containing a JSONL export, SQLite snapshot, manifest JSON, and SHA-256 checksum file in one command.
 - `migrations` — reports the local `schema_migrations` history and current schema version.
 - `restore_sqlite` / `restore-sqlite` — restores the active database from a SQLite backup, writes a pre-restore backup beside the live DB, and rebuilds FTS indexes.
 - `import_jsonl` / `import-jsonl` — previews or applies a JSONL import. Dry-run is the default and reports duplicate IDs plus content-level memory/proposal conflicts before anything is written.

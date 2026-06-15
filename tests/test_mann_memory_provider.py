@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from mann_memory import LocalSQLiteMemoryProvider
 
@@ -541,3 +542,32 @@ def test_portability_sqlite_backup_restore_and_migrations(tmp_path):
     assert restored["table_counts"]["memories"] >= 1
     search = json.loads(p.handle_tool_call("mann_memory_search", {"query": "SQLite backups"}))
     assert search["memories"][0]["id"] == original["id"]
+
+
+
+def test_portability_export_backup_bundle_contains_jsonl_sqlite_manifest_and_checksums(tmp_path):
+    p = _provider(tmp_path)
+    p.handle_tool_call("mann_memory_store", {
+        "content": "Export backup bundles should include portable and exact snapshots.",
+        "memory_type": "decision",
+        "namespace": "default",
+    })
+    bundle = json.loads(p.handle_tool_call("mann_memory_portability", {
+        "action": "export_backup",
+        "path": str(tmp_path / "bundle"),
+        "namespace": "default",
+    }))["export_backup"]
+    assert bundle["schema_version"] >= 1
+    assert bundle["jsonl_export"]["records"] >= 2
+    assert bundle["sqlite_backup"]["bytes"] > 0
+    assert set(bundle["files"]) == {"jsonl", "sqlite", "manifest", "checksums"}
+    for info in bundle["files"].values():
+        assert Path(info["path"]).exists()
+        assert info["bytes"] > 0
+        assert len(info["sha256"]) == 64
+    manifest = json.loads(Path(bundle["manifest_path"]).read_text())
+    assert manifest["format"] == "mann_memory_export_backup"
+    assert manifest["files"]["jsonl"]["sha256"] == bundle["files"]["jsonl"]["sha256"]
+    checksums = Path(bundle["checksums_path"]).read_text()
+    assert Path(bundle["files"]["jsonl"]["path"]).name in checksums
+    assert Path(bundle["files"]["sqlite"]["path"]).name in checksums
