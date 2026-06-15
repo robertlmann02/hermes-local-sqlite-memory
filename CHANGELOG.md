@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5 - 2026-06-15
+
+- Add `mann_memory_manage` for operator visibility/control of durable memory contents: list, show, update, archive, and delete by ID.
+- Add CLI `hermes mann_memory memories ...` commands for memory inspection and correction.
+- Keep archived/deleted rows out of normal recall while allowing explicit audit with `status=all`.
+- Add regression coverage for namespace-isolated listing, show, update, archive, and all-status audit listing.
+
 ## 0.1.4 - 2026-06-09
 
 - Rename the provider/package/CLI identity from `local_sqlite_memory` to `mann_memory` / Mann_Memory so managed Hermes computers use one consistent memory-provider name.

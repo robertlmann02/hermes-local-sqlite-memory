@@ -37,7 +37,7 @@ except ModuleNotFoundError:  # Allow standalone tests/package imports outside He
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 # Namespaces are intentionally user-defined; values are sanitized by _safe_namespace.
 _ALLOWED_TYPES = {"fact", "preference", "decision", "project", "infrastructure", "handoff", "identity", "other"}
@@ -168,9 +168,9 @@ def _memory_guard(content: str, namespace: str = _DEFAULT_NAMESPACE, memory_type
         score += 0.95
 
     cross_namespace_patterns = [
-        r"\b(?:deuce|penny|mannbookair|ayonna)\b.*\b(?:same|identical|impersonate|ignore namespace)\b",
+        r"\b(?:assistant[_ -]?a|assistant[_ -]?b|assistant[_ -]?c|accounting[_ -]?assistant|ops[_ -]?assistant)\b.*\b(?:same|identical|impersonate|ignore namespace)\b",
         r"\b(?:merge|mix)\s+(?:all\s+)?(?:namespaces|profiles|assistants)\b",
-        r"\b(?:penny|mannbookair|ayonna)\b.*\b(?:is|are)\s+deuce\b",
+        r"\b(?:assistant[_ -]?b|assistant[_ -]?c|accounting[_ -]?assistant)\b.*\b(?:is|are)\s+(?:assistant[_ -]?a|ops[_ -]?assistant)\b",
     ]
     if any(re.search(p, lower, re.I) for p in cross_namespace_patterns):
         reasons.append("cross_namespace_identity_claim")
@@ -398,8 +398,42 @@ class _Store:
             row = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         return dict(row) if row else None
 
+    def list_memories(self, namespace: str = _DEFAULT_NAMESPACE, status: str = "active",
+                      limit: int = 50, query: str = "") -> List[dict]:
+        """List durable memories for operator review/control.
+
+        Unlike search_memories(), this is an audit surface: it can include
+        archived/deleted rows when explicitly requested and defaults to recent
+        active memories for the selected namespace.
+        """
+        namespace = _safe_namespace(namespace)
+        status = _clean_text(status or "active", 32).lower()
+        if status not in {"active", "archived", "deleted", "all"}:
+            status = "active"
+        limit = max(1, min(int(limit or 50), 200))
+        query = _clean_text(query, 500)
+        with self._lock, self._connect() as conn:
+            where = ["namespace = ?"]
+            params: list[Any] = [namespace]
+            if status != "all":
+                where.append("status = ?")
+                params.append(status)
+            if query:
+                where.append("content LIKE ?")
+                params.append(f"%{query}%")
+            params.append(limit)
+            rows = conn.execute(
+                f"""SELECT * FROM memories
+                    WHERE {' AND '.join(where)}
+                    ORDER BY updated_at DESC, importance DESC
+                    LIMIT ?""",
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def update_memory(self, memory_id: str, *, content: Optional[str] = None, status: Optional[str] = None,
-                      importance: Optional[float] = None, confidence: Optional[float] = None) -> dict:
+                      memory_type: Optional[str] = None, importance: Optional[float] = None,
+                      confidence: Optional[float] = None) -> dict:
         current = self.get_memory(memory_id)
         if not current:
             raise ValueError(f"memory not found: {memory_id}")
@@ -411,6 +445,9 @@ class _Store:
                 raise ValueError("content cannot be empty")
             updates.append("content = ?")
             params.append(content)
+        if memory_type is not None:
+            updates.append("memory_type = ?")
+            params.append(_safe_type(memory_type))
         if status is not None:
             if status not in {"active", "archived", "deleted"}:
                 raise ValueError("status must be active, archived, or deleted")
@@ -1154,6 +1191,28 @@ LOCAL_MEMORY_HONCHO_SCHEMA = {
 }
 
 
+LOCAL_MEMORY_MANAGE_SCHEMA = {
+    "name": "mann_memory_manage",
+    "description": "Inspect and control durable Mann_Memory contents: list, show, update, archive, or delete memories by ID.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["list", "show", "update", "archive", "delete"]},
+            "memory_id": {"type": "string", "description": "Memory ID for show/update/archive/delete."},
+            "namespace": {"type": "string", "description": "Namespace for list; default provider namespace."},
+            "status": {"type": "string", "enum": ["active", "archived", "deleted", "all"], "description": "List status filter; default active."},
+            "query": {"type": "string", "description": "Optional substring filter for list."},
+            "limit": {"type": "integer", "description": "List limit; default 50, max 200."},
+            "content": {"type": "string", "description": "Replacement content for update."},
+            "memory_type": {"type": "string", "enum": sorted(_ALLOWED_TYPES), "description": "Replacement memory category for update."},
+            "importance": {"type": "number", "description": "Replacement 0-1 importance for update."},
+            "confidence": {"type": "number", "description": "Replacement 0-1 confidence for update."},
+        },
+        "required": ["action"],
+    },
+}
+
+
 LOCAL_MEMORY_STATUS_SCHEMA = {
     "name": "mann_memory_status",
     "description": "Show private local Mann_Memory database path and counts by namespace/status.",
@@ -1333,6 +1392,7 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
             LOCAL_MEMORY_STORE_SCHEMA,
             LOCAL_MEMORY_REVIEW_SCHEMA,
             LOCAL_MEMORY_FORGET_SCHEMA,
+            LOCAL_MEMORY_MANAGE_SCHEMA,
             LOCAL_MEMORY_HONCHO_SCHEMA,
             LOCAL_MEMORY_STATUS_SCHEMA,
         ]
@@ -1388,6 +1448,35 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                 if action in {"approve", "reject"}:
                     return _json_result(proposal=self._store.review_proposal(args.get("proposal_id", ""), action))
                 return tool_error("unknown review action")
+            if tool_name == "mann_memory_manage":
+                action = (args.get("action") or "list").lower()
+                ns = args.get("namespace", self._namespace)
+                if action == "list":
+                    memories = self._store.list_memories(
+                        namespace=ns, status=args.get("status", "active"),
+                        limit=int(args.get("limit", 50)), query=args.get("query", ""),
+                    )
+                    return _json_result(memories=memories)
+                if action == "show":
+                    mem = self._store.get_memory(args.get("memory_id", ""))
+                    if not mem:
+                        return tool_error("memory not found", memory_id=args.get("memory_id", ""))
+                    return _json_result(memory=mem)
+                if action == "update":
+                    update_kwargs: dict[str, Any] = {}
+                    for key in ("content", "memory_type", "importance", "confidence"):
+                        if key in args and args.get(key) is not None:
+                            update_kwargs[key] = args.get(key)
+                    if not update_kwargs:
+                        return tool_error("update requires content, memory_type, importance, or confidence")
+                    mem = self._store.update_memory(args.get("memory_id", ""), **update_kwargs)
+                    return _json_result(memory=mem)
+                if action in {"archive", "delete"}:
+                    mem = self._store.update_memory(
+                        args.get("memory_id", ""), status="deleted" if action == "delete" else "archived"
+                    )
+                    return _json_result(memory=mem)
+                return tool_error("unknown memory manage action")
             if tool_name == "mann_memory_forget":
                 status = "deleted" if args.get("mode") == "delete" else "archived"
                 mem = self._store.update_memory(args.get("memory_id", ""), status=status)

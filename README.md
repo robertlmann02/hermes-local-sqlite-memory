@@ -13,7 +13,7 @@ A local-first SQLite/FTS5 memory provider for [Hermes Agent](https://hermes-agen
 - Deterministic local consolidation pass for repeated recent patterns.
 - Opportunistic self-maintenance: cleanup + workspace/peer dreaming can run at session end without an external cron job.
 - User-defined namespaces so different assistants/users stay separated.
-- Runtime tools for store/search/context/review/forget/status/graph operations.
+- Runtime tools for store/search/context/review/forget/status/graph plus durable-memory inspection/control operations.
 - No vector database, embedding model, or cloud memory dependency.
 
 ## Install as a Hermes memory plugin
@@ -67,6 +67,7 @@ This is opportunistic: it runs when Hermes calls the provider's session-end hook
 - `mann_memory_context`
 - `mann_memory_review`
 - `mann_memory_forget`
+- `mann_memory_manage`
 - `mann_memory_graph`
 - `mann_memory_status`
 
@@ -78,10 +79,29 @@ hermes mann_memory remember "User prefers concise status updates." --namespace d
 hermes mann_memory search "concise status" --namespace default
 hermes mann_memory review list --namespace default
 hermes mann_memory review list --namespace default --status quarantined
+hermes mann_memory memories list --namespace default --status active
+hermes mann_memory memories show dlm_example1234
+hermes mann_memory memories update dlm_example1234 --content "Corrected durable memory text." --memory-type fact
+hermes mann_memory memories archive dlm_example1234
 hermes mann_memory dream --namespace default
 ```
 
 The graph tool also exposes `cleanup` and `self_maintain` actions for manual or integration-level maintenance.
+
+
+## Inspecting and controlling memory contents
+
+Use `mann_memory_manage` or the `hermes mann_memory memories ...` CLI group when an operator needs to see or correct what the provider currently remembers. The management surface is intentionally ID-based so changes are auditable and reversible at the row level.
+
+Supported actions:
+
+- `list` — list active, archived, deleted, or all durable memories in a namespace, with an optional substring query.
+- `show` — show one memory by ID.
+- `update` — replace content, category, importance, or confidence for one memory by ID.
+- `archive` — remove one memory from active recall without deleting its row.
+- `delete` — mark one memory deleted and remove it from active recall.
+
+Archived and deleted memories are excluded from normal `mann_memory_search`/context recall. Use `status=all` only for operator review/audit.
 
 ## Memory Guard quarantine
 

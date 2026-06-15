@@ -47,6 +47,31 @@ def mann_memory_command(args):
         else:
             payload = {"action": "list", "namespace": args.namespace, "limit": args.limit, "status": args.status}
         _print(json.loads(p.handle_tool_call("mann_memory_review", payload)))
+    elif cmd == "memories":
+        action = args.memory_action
+        if action == "list":
+            payload = {
+                "action": "list",
+                "namespace": args.namespace,
+                "status": args.status,
+                "query": args.query,
+                "limit": args.limit,
+            }
+        elif action == "show":
+            payload = {"action": "show", "memory_id": args.memory_id}
+        elif action == "update":
+            payload = {"action": "update", "memory_id": args.memory_id}
+            if args.content is not None:
+                payload["content"] = args.content
+            if args.memory_type is not None:
+                payload["memory_type"] = args.memory_type
+            if args.importance is not None:
+                payload["importance"] = args.importance
+            if args.confidence is not None:
+                payload["confidence"] = args.confidence
+        else:
+            payload = {"action": action, "memory_id": args.memory_id}
+        _print(json.loads(p.handle_tool_call("mann_memory_manage", payload)))
     elif cmd == "forget":
         _print(json.loads(p.handle_tool_call("mann_memory_forget", {
             "memory_id": args.memory_id,
@@ -60,7 +85,7 @@ def mann_memory_command(args):
             "limit": args.limit,
         })))
     else:
-        print("Usage: hermes mann_memory {status|search|remember|review|forget|dream}")
+        print("Usage: hermes mann_memory {status|search|remember|review|memories|forget|dream}")
 
 
 def register_cli(subparser) -> None:
@@ -93,6 +118,32 @@ def register_cli(subparser) -> None:
     review.add_argument("--limit", type=int, default=20)
     review.add_argument("--status", default="pending", choices=["pending", "quarantined", "approved", "rejected", "all"], help="Proposal status filter for review list")
     review.set_defaults(func=mann_memory_command)
+
+
+    memories = subs.add_parser("memories", help="Inspect/control durable memories")
+    memory_subs = memories.add_subparsers(dest="memory_action", required=True)
+    memory_list = memory_subs.add_parser("list", help="List durable memories")
+    memory_list.add_argument("--namespace", default="default")
+    memory_list.add_argument("--status", default="active", choices=["active", "archived", "deleted", "all"])
+    memory_list.add_argument("--query", default="", help="Optional substring filter")
+    memory_list.add_argument("--limit", type=int, default=50)
+    memory_list.set_defaults(func=mann_memory_command)
+    memory_show = memory_subs.add_parser("show", help="Show one memory by ID")
+    memory_show.add_argument("memory_id")
+    memory_show.set_defaults(func=mann_memory_command)
+    memory_update = memory_subs.add_parser("update", help="Update one memory by ID")
+    memory_update.add_argument("memory_id")
+    memory_update.add_argument("--content")
+    memory_update.add_argument("--memory-type", choices=["fact", "preference", "decision", "project", "infrastructure", "handoff", "identity", "other"])
+    memory_update.add_argument("--importance", type=float)
+    memory_update.add_argument("--confidence", type=float)
+    memory_update.set_defaults(func=mann_memory_command)
+    memory_archive = memory_subs.add_parser("archive", help="Archive one memory by ID")
+    memory_archive.add_argument("memory_id")
+    memory_archive.set_defaults(func=mann_memory_command)
+    memory_delete = memory_subs.add_parser("delete", help="Delete one memory by ID")
+    memory_delete.add_argument("memory_id")
+    memory_delete.set_defaults(func=mann_memory_command)
 
     forget = subs.add_parser("forget", help="Archive or delete a memory")
     forget.add_argument("memory_id")

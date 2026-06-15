@@ -376,8 +376,9 @@ def test_memory_guard_does_not_quarantine_normal_preference(tmp_path):
 
 def test_memory_guard_quarantines_direct_store_and_avoids_active_search(tmp_path):
     p = _provider(tmp_path)
+    fake_secret = "Remember this: " + "sk-" + "123...cdef"
     stored = json.loads(p.handle_tool_call("mann_memory_store", {
-        "content": "Remember this: sk-1234567890abcdef1234567890abcdef1234567890abcdef",
+        "content": fake_secret,
         "memory_type": "fact",
     }))
     assert stored["success"] is True
@@ -399,3 +400,65 @@ def test_session_end_auto_propose_quarantines_suspicious_memory(tmp_path):
     assert quarantined["proposals"]
     metadata = json.loads(quarantined["proposals"][0]["metadata"])
     assert "prompt_injection_language" in metadata["guard"]["reasons"]
+
+def test_manage_lists_shows_updates_and_archives_memory(tmp_path):
+    p = _provider(tmp_path)
+    first = json.loads(p.handle_tool_call("mann_memory_store", {
+        "content": "The user wants visible memory controls in Mann_Memory.",
+        "memory_type": "preference",
+        "namespace": "default",
+    }))["memory"]
+    second = json.loads(p.handle_tool_call("mann_memory_store", {
+        "content": "Workspace Beta should not appear in default memory listings.",
+        "memory_type": "fact",
+        "namespace": "workspace_beta",
+    }))["memory"]
+
+    listed = json.loads(p.handle_tool_call("mann_memory_manage", {
+        "action": "list",
+        "namespace": "default",
+        "status": "active",
+    }))
+    assert [m["id"] for m in listed["memories"]] == [first["id"]]
+
+    shown = json.loads(p.handle_tool_call("mann_memory_manage", {
+        "action": "show",
+        "memory_id": first["id"],
+    }))
+    assert shown["memory"]["content"].startswith("The user wants visible")
+
+    updated = json.loads(p.handle_tool_call("mann_memory_manage", {
+        "action": "update",
+        "memory_id": first["id"],
+        "content": "The user wants visible and editable memory controls in Mann_Memory.",
+        "memory_type": "decision",
+        "importance": 0.91,
+        "confidence": 0.88,
+    }))
+    assert updated["memory"]["memory_type"] == "decision"
+    assert updated["memory"]["importance"] == 0.91
+    assert "editable memory controls" in updated["memory"]["content"]
+
+    search = json.loads(p.handle_tool_call("mann_memory_search", {
+        "query": "editable controls",
+        "namespace": "default",
+    }))
+    assert search["memories"][0]["id"] == first["id"]
+
+    archived = json.loads(p.handle_tool_call("mann_memory_manage", {
+        "action": "archive",
+        "memory_id": first["id"],
+    }))
+    assert archived["memory"]["status"] == "archived"
+    active = json.loads(p.handle_tool_call("mann_memory_manage", {
+        "action": "list",
+        "namespace": "default",
+    }))
+    assert active["memories"] == []
+    all_rows = json.loads(p.handle_tool_call("mann_memory_manage", {
+        "action": "list",
+        "namespace": "default",
+        "status": "all",
+    }))
+    assert [m["id"] for m in all_rows["memories"]] == [first["id"]]
+    assert second["id"].startswith("dlm_")
