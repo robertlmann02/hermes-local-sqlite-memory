@@ -1653,7 +1653,7 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                 confidence=0.8, importance=0.75, metadata=metadata or {},
             )
         except Exception as e:
-            logger.debug("Failed mirroring built-in memory write to Local local: %s", e)
+            logger.debug("Failed mirroring built-in memory write to Mann_Memory: %s", e)
 
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, **kwargs) -> None:
         self._session_id = new_session_id or ""
