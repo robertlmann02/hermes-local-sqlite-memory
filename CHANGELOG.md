@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.8 - 2026-06-23
+
+- Add conservative `cleanup_hygiene` maintenance for review queues: dry-run by default, apply rejects duplicate/noisy pending proposals without auto-approving anything.
+- Add duplicate active-memory cleanup that archives duplicate durable memories instead of hard-deleting them.
+- Add CLI `hermes mann_memory cleanup --dry-run|--apply` and graph action support for operator-controlled cleanup.
+- Add regression coverage for duplicate proposal rejection, transcript/task-fragment cleanup, and duplicate memory archiving.
+
 ## 0.1.7 - 2026-06-15
 
 - Add one-command `export_backup` portability action that creates a portable backup bundle containing JSONL export, SQLite snapshot, manifest, and SHA-256 checksums.

@@ -571,3 +571,91 @@ def test_portability_export_backup_bundle_contains_jsonl_sqlite_manifest_and_che
     checksums = Path(bundle["checksums_path"]).read_text()
     assert Path(bundle["files"]["jsonl"]["path"]).name in checksums
     assert Path(bundle["files"]["sqlite"]["path"]).name in checksums
+
+
+def test_cleanup_hygiene_rejects_duplicate_pending_proposals_and_archives_duplicate_memories(tmp_path):
+    p = _provider(tmp_path)
+    kept = json.loads(p.handle_tool_call("mann_memory_store", {
+        "content": "Robert hates Snap packages and prefers Snap-free Linux setups.",
+        "memory_type": "preference",
+        "namespace": "default",
+        "importance": 0.9,
+        "confidence": 1.0,
+    }))["memory"]
+    duplicate = json.loads(p.handle_tool_call("mann_memory_store", {
+        "content": "Robert hates Snap packages and prefers Snap-free Linux setups.",
+        "memory_type": "preference",
+        "namespace": "default",
+        "importance": 0.6,
+        "confidence": 0.7,
+    }))["memory"]
+    p.handle_tool_call("mann_memory_review", {
+        "action": "propose",
+        "content": "Robert hates Snap packages and prefers Snap-free Linux setups.",
+        "memory_type": "preference",
+        "namespace": "default",
+    })
+    p.handle_tool_call("mann_memory_review", {
+        "action": "propose",
+        "content": "Reply exactly: DEFAULT_PROFILE_SMOKE_OK",
+        "memory_type": "fact",
+        "namespace": "default",
+    })
+
+    preview = json.loads(p.handle_tool_call("mann_memory_graph", {
+        "action": "cleanup_hygiene",
+        "namespace": "default",
+        "dry_run": True,
+    }))["cleanup"]
+    assert preview["dry_run"] is True
+    assert preview["rejected_proposals"] >= 2
+    assert preview["archived_memories"] == 1
+    assert json.loads(p.handle_tool_call("mann_memory_review", {"action": "list"}))["proposals"]
+
+    applied = json.loads(p.handle_tool_call("mann_memory_graph", {
+        "action": "cleanup_hygiene",
+        "namespace": "default",
+        "dry_run": False,
+    }))["cleanup"]
+    assert applied["dry_run"] is False
+    assert applied["rejected_proposals"] >= 2
+    assert applied["archived_memories"] == 1
+    assert json.loads(p.handle_tool_call("mann_memory_review", {"action": "list"}))["proposals"] == []
+    active = json.loads(p.handle_tool_call("mann_memory_manage", {
+        "action": "list",
+        "namespace": "default",
+        "status": "active",
+    }))["memories"]
+    archived = json.loads(p.handle_tool_call("mann_memory_manage", {
+        "action": "list",
+        "namespace": "default",
+        "status": "archived",
+    }))["memories"]
+    assert [m["id"] for m in active] == [kept["id"]]
+    assert [m["id"] for m in archived] == [duplicate["id"]]
+
+
+def test_cleanup_hygiene_rejects_transcript_and_task_fragments(tmp_path):
+    p = _provider(tmp_path)
+    p._store.add_proposal(
+        "path: `/tmp/example` SHA-256: `abc123`",
+        namespace="default", proposed_type="infrastructure",
+        evidence="assistant: I verified a path in a status report",
+        source_session="s", confidence=0.6,
+    )
+    p._store.add_proposal(
+        "to do option A and build the wrapper",
+        namespace="default", proposed_type="preference",
+        evidence="user: I want to do option A and build the wrapper",
+        source_session="s", confidence=0.6,
+    )
+    applied = json.loads(p.handle_tool_call("mann_memory_graph", {
+        "action": "cleanup_hygiene",
+        "namespace": "default",
+        "dry_run": False,
+    }))["cleanup"]
+    assert applied["rejected_proposals"] == 2
+    reasons = {item["reason"] for item in applied["proposal_actions"]}
+    assert "obvious_noise" in reasons
+    assert "stale_task_fragment" in reasons
+    assert json.loads(p.handle_tool_call("mann_memory_review", {"action": "list"}))["proposals"] == []

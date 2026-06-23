@@ -16,7 +16,7 @@ A local-first SQLite/FTS5 memory provider for [Hermes Agent](https://hermes-agen
 - Memory Guard: deterministic poisoning/secret-risk scoring quarantines suspicious proposals away from the normal pending queue.
 - Graph-style workspace, peer, session, message, conclusion, and representation tables.
 - Deterministic local consolidation pass for repeated recent patterns.
-- Opportunistic self-maintenance: cleanup + workspace/peer dreaming can run at session end without an external cron job.
+- Opportunistic self-maintenance: cleanup + workspace/peer dreaming can run at session end without an external cron job; conservative review-queue hygiene and duplicate-memory archiving are available as explicit dry-run/apply maintenance commands.
 - User-defined namespaces so different assistants/users stay separated.
 - Runtime tools for store/search/context/review/forget/status/graph plus durable-memory inspection/control and portability operations.
 - JSONL export/import, one-command export-backup bundles, consistent SQLite backups, restore, schema migration history, and dry-run import conflict previews.
@@ -98,9 +98,11 @@ hermes mann_memory portability import-jsonl ~/mann-memory-export.jsonl --dry-run
 hermes mann_memory portability import-jsonl ~/mann-memory-export.jsonl --apply
 hermes mann_memory portability restore-sqlite ~/mann-memory-backup.sqlite3
 hermes mann_memory dream --namespace default
+hermes mann_memory cleanup --namespace default --dry-run
+hermes mann_memory cleanup --namespace default --apply
 ```
 
-The graph tool also exposes `cleanup` and `self_maintain` actions for manual or integration-level maintenance.
+The graph tool also exposes `cleanup`, `cleanup_hygiene`, and `self_maintain` actions for manual or integration-level maintenance. `cleanup_hygiene` defaults to dry-run and only rejects obvious duplicate/noisy pending proposals or archives duplicate active durable memories; it never auto-approves proposals and never hard-deletes memories.
 
 
 ## Inspecting and controlling memory contents

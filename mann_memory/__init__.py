@@ -38,7 +38,7 @@ except ModuleNotFoundError:  # Allow standalone tests/package imports outside He
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.1.7"
+__version__ = "0.1.8"
 
 # Namespaces are intentionally user-defined; values are sanitized by _safe_namespace.
 _ALLOWED_TYPES = {"fact", "preference", "decision", "project", "infrastructure", "handoff", "identity", "other"}
@@ -136,6 +136,77 @@ def _noise_regex() -> re.Pattern[str]:
         r"host=127\.0\.0\.1|ssh -L|vnc\.html)",
         re.I,
     )
+
+
+def _memory_cleanup_key(content: str) -> str:
+    """Normalize memory/proposal content for conservative duplicate cleanup."""
+    text = _clean_text(content, 5000).lower()
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[^a-z0-9\s]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _memory_word_set(content: str) -> set[str]:
+    return {w for w in _memory_cleanup_key(content).split() if len(w) > 2}
+
+
+def _proposal_cleanup_reason(row: dict, active_keys: set[str], seen_proposals: dict[str, str], noise: re.Pattern[str]) -> str:
+    """Return a conservative reason to reject a pending proposal, or ''."""
+    content = row.get("content") or ""
+    proposed_type = row.get("proposed_type") or ""
+    evidence = row.get("evidence") or ""
+    key = _memory_cleanup_key(content)
+    lower = content.lower().strip()
+    evidence_role = evidence.split(":", 1)[0].strip().lower() if evidence else ""
+    if noise.search(content) or (proposed_type == "infrastructure" and len(content) < 80):
+        return "obvious_noise"
+    if key and key in active_keys:
+        return "duplicates_active_memory"
+    if key and key in seen_proposals:
+        return f"duplicate_open_proposal:{seen_proposals[key]}"
+    transcript_markers = (
+        "local honcho-style memory context",
+        "[tool:",
+        "[2026-",
+        "```",
+        "## ",
+        "{\"output\"",
+        "image attached at:",
+        "[screenshot]",
+    )
+    if any(marker in lower for marker in transcript_markers):
+        return "transcript_or_tool_fragment"
+    fragment_starters = (
+        "to ", "it ", "this ", "that ", "the ", "you ", "host ", "path ",
+        "service", "port ", "profile", "cron ", "repo ", "branch ", "ip ",
+        "checked ", "verified ", "done ", "current ", "service manager",
+    )
+    if lower.startswith(fragment_starters):
+        return "stale_task_fragment"
+    return ""
+
+
+def _near_duplicate_memory(a: str, b: str) -> bool:
+    """Conservative near-duplicate check for operator cleanup.
+
+    Exact normalized matches are duplicates.  For non-exact matches, require
+    substantial overlap and one side to mostly contain the other so distinct
+    multi-fact memories are not collapsed casually.
+    """
+    ka = _memory_cleanup_key(a)
+    kb = _memory_cleanup_key(b)
+    if not ka or not kb:
+        return False
+    if ka == kb:
+        return True
+    wa = _memory_word_set(a)
+    wb = _memory_word_set(b)
+    if len(wa) < 5 or len(wb) < 5:
+        return False
+    inter = len(wa & wb)
+    containment = inter / max(1, min(len(wa), len(wb)))
+    jaccard = inter / max(1, len(wa | wb))
+    return containment >= 0.92 and jaccard >= 0.82
 
 
 def _memory_guard(content: str, namespace: str = _DEFAULT_NAMESPACE, memory_type: str = "fact") -> dict:
@@ -1158,6 +1229,108 @@ class _Store:
             "deleted_representations": len(deleted_representations),
         }
 
+    def cleanup_memory_hygiene(self, namespace: str = _DEFAULT_NAMESPACE, *, dry_run: bool = True) -> dict:
+        """Conservatively reject noisy/duplicate proposals and archive duplicate durable memories.
+
+        This is intentionally review-safe: it never auto-approves proposals and
+        never hard-deletes memories.  Applying the cleanup changes only obvious
+        pending review noise/duplicates to rejected and duplicate active durable
+        memories to archived so operators can audit/reverse if needed.
+        """
+        namespace = _safe_namespace(namespace)
+        dry_run = bool(dry_run)
+        noise = _noise_regex()
+        ts = _now()
+        rejected_proposals: list[dict] = []
+        archived_memories: list[dict] = []
+        with self._lock, self._connect() as conn:
+            active_memories = [dict(r) for r in conn.execute(
+                "SELECT * FROM memories WHERE namespace = ? AND status = 'active'", (namespace,)
+            ).fetchall()]
+            active_keys = {_memory_cleanup_key(r.get("content") or "") for r in active_memories}
+            seen_proposals: dict[str, str] = {}
+            proposals = [dict(r) for r in conn.execute(
+                "SELECT * FROM review_queue WHERE namespace = ? AND status = 'pending' ORDER BY created_at ASC", (namespace,)
+            ).fetchall()]
+            for row in proposals:
+                content = row.get("content") or ""
+                proposed_type = row.get("proposed_type") or ""
+                key = _memory_cleanup_key(content)
+                reason = _proposal_cleanup_reason(row, active_keys, seen_proposals, noise)
+                if reason:
+                    rejected_proposals.append({"id": row["id"], "reason": reason})
+                    if not dry_run:
+                        try:
+                            meta = json.loads(row.get("metadata") or "{}")
+                        except Exception:
+                            meta = {}
+                        meta["cleanup_reason"] = f"memory_hygiene rejected {reason}"
+                        conn.execute(
+                            "UPDATE review_queue SET status='rejected', reviewed_at=?, metadata=? WHERE id=?",
+                            (ts, json.dumps(meta, ensure_ascii=False), row["id"]),
+                        )
+                elif key:
+                    seen_proposals[key] = row["id"]
+
+            grouped: dict[tuple[str, str], list[dict]] = {}
+            for row in active_memories:
+                grouped.setdefault((row.get("memory_type") or "fact", _memory_cleanup_key(row.get("content") or "")), []).append(row)
+            duplicate_sets: list[list[dict]] = [rows for (_type, key), rows in grouped.items() if key and len(rows) > 1]
+
+            # Also catch very close variants within the same memory type, but only
+            # when the word overlap is high enough to be safely considered duplicate.
+            for memory_type in sorted({r.get("memory_type") or "fact" for r in active_memories}):
+                type_rows = [r for r in active_memories if (r.get("memory_type") or "fact") == memory_type]
+                used: set[str] = {r["id"] for group in duplicate_sets for r in group}
+                for row in type_rows:
+                    if row["id"] in used:
+                        continue
+                    group = [row]
+                    for other in type_rows:
+                        if other["id"] == row["id"] or other["id"] in used:
+                            continue
+                        if _near_duplicate_memory(row.get("content") or "", other.get("content") or ""):
+                            group.append(other)
+                    if len(group) > 1:
+                        duplicate_sets.append(group)
+                        used.update(r["id"] for r in group)
+
+            for group in duplicate_sets:
+                keep = sorted(
+                    group,
+                    key=lambda r: (
+                        float(r.get("importance") or 0.0),
+                        float(r.get("confidence") or 0.0),
+                        len(r.get("content") or ""),
+                        r.get("updated_at") or "",
+                    ),
+                    reverse=True,
+                )[0]
+                for row in group:
+                    if row["id"] == keep["id"]:
+                        continue
+                    archived_memories.append({"id": row["id"], "kept_id": keep["id"], "reason": "duplicate_active_memory"})
+                    if not dry_run:
+                        try:
+                            meta = json.loads(row.get("metadata") or "{}")
+                        except Exception:
+                            meta = {}
+                        meta["cleanup_reason"] = "memory_hygiene archived duplicate active memory"
+                        meta["duplicate_of"] = keep["id"]
+                        conn.execute(
+                            "UPDATE memories SET status='archived', updated_at=?, metadata=? WHERE id=?",
+                            (ts, json.dumps(meta, ensure_ascii=False), row["id"]),
+                        )
+                        conn.execute("DELETE FROM memories_fts WHERE id=?", (row["id"],))
+        return {
+            "namespace": namespace,
+            "dry_run": dry_run,
+            "rejected_proposals": len(rejected_proposals),
+            "archived_memories": len(archived_memories),
+            "proposal_actions": rejected_proposals[:50],
+            "memory_actions": archived_memories[:50],
+        }
+
     def auto_dream_state(self, namespace: str = _DEFAULT_NAMESPACE) -> dict:
         namespace = _safe_namespace(namespace)
         with self._lock, self._connect() as conn:
@@ -1427,7 +1600,7 @@ LOCAL_MEMORY_HONCHO_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["upsert_peer", "upsert_session", "add_message", "add_conclusion", "build_representation", "dream", "cleanup", "self_maintain", "context"]},
+            "action": {"type": "string", "enum": ["upsert_peer", "upsert_session", "add_message", "add_conclusion", "build_representation", "dream", "cleanup", "cleanup_hygiene", "self_maintain", "context"]},
             "namespace": {"type": "string", "description": "Workspace namespace; default default."},
             "peer_handle": {"type": "string", "description": "Stable peer handle, e.g. user, assistant, workspace."},
             "peer_id": {"type": "string", "description": "Peer ID for messages/conclusions/representations."},
@@ -1440,6 +1613,7 @@ LOCAL_MEMORY_HONCHO_SCHEMA = {
             "kind": {"type": "string", "description": "Representation kind, default peer_context."},
             "query": {"type": "string", "description": "Context/search query."},
             "limit": {"type": "integer", "description": "Max results."},
+            "dry_run": {"type": "boolean", "description": "For cleanup_hygiene, preview actions without applying; default true."},
         },
         "required": ["action"],
     },
@@ -1798,6 +1972,9 @@ class LocalSQLiteMemoryProvider(MemoryProvider):
                     return _json_result(dream=dream)
                 if action == "cleanup":
                     return _json_result(cleanup=self._store.cleanup_noise(ns))
+                if action == "cleanup_hygiene":
+                    dry_run = str(args.get("dry_run", True)).lower() not in {"0", "false", "no"}
+                    return _json_result(cleanup=self._store.cleanup_memory_hygiene(ns, dry_run=dry_run))
                 if action == "self_maintain":
                     return _json_result(maintenance=self._store.self_maintain(
                         ns, assistant_handle=args.get("peer_handle", self._assistant_handle), limit=int(args.get("limit", self._auto_dream_limit))

@@ -84,6 +84,12 @@ def mann_memory_command(args):
             "peer_id": args.peer_id,
             "limit": args.limit,
         })))
+    elif cmd == "cleanup":
+        _print(json.loads(p.handle_tool_call("mann_memory_graph", {
+            "action": "cleanup_hygiene",
+            "namespace": args.namespace,
+            "dry_run": args.dry_run,
+        })))
     elif cmd == "portability":
         payload = {"action": args.portability_action}
         if getattr(args, "path", None):
@@ -98,7 +104,7 @@ def mann_memory_command(args):
             payload["overwrite"] = args.overwrite
         _print(json.loads(p.handle_tool_call("mann_memory_portability", payload)))
     else:
-        print("Usage: hermes mann_memory {status|search|remember|review|memories|forget|dream|portability}")
+        print("Usage: hermes mann_memory {status|search|remember|review|memories|forget|dream|cleanup|portability}")
 
 
 def register_cli(subparser) -> None:
@@ -168,6 +174,12 @@ def register_cli(subparser) -> None:
     dream.add_argument("--peer-id", default="", help="Optional peer id to dream for; blank means workspace")
     dream.add_argument("--limit", type=int, default=24, help="Recent messages to inspect")
     dream.set_defaults(func=mann_memory_command)
+
+    cleanup = subs.add_parser("cleanup", help="Preview/apply conservative memory hygiene cleanup")
+    cleanup.add_argument("--namespace", default="default")
+    cleanup.add_argument("--dry-run", dest="dry_run", action="store_true", default=True, help="Preview without writing (default)")
+    cleanup.add_argument("--apply", dest="dry_run", action="store_false", help="Reject duplicate/noisy proposals and archive duplicate active memories")
+    cleanup.set_defaults(func=mann_memory_command)
 
     portability = subs.add_parser("portability", help="Export, back up, restore, import, and inspect migrations")
     portability_subs = portability.add_subparsers(dest="portability_action", required=True)
