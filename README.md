@@ -66,6 +66,18 @@ With `auto_dream=true`, the provider performs the same class of maintenance that
 
 This is opportunistic: it runs when Hermes calls the provider's session-end hook, so active assistants maintain themselves locally. Fleet-wide cross-host scheduling is still possible, but is no longer required for active bots.
 
+## Integration notes for chat bridges
+
+When a one-shot chat bridge injects Mann_Memory context into a larger prompt packet, preserve the bridge's base instructions first and truncate only the appended memory section. A bad pattern is to build the complete packet and then slice from the tail, for example `packet = packet[-MAX_PACKET_CHARS:]`; that can remove persona, identity-boundary, and room-state instructions when the memory database grows.
+
+Recommended bridge behavior:
+
+1. Build the base context packet with persona, room/session state, and recent turns.
+2. Build the Mann_Memory/local-memory context separately.
+3. Compute the remaining character budget after the base packet.
+4. Append the memory context only within that remaining budget, adding an explicit truncation marker when needed.
+5. Set explicit `TALK_MEMORY_DB_PATH` and namespace/profile configuration in service env files instead of relying on copied default paths.
+
 ## Tool names
 
 - `mann_memory_store`

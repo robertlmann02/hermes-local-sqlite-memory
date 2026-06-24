@@ -6,6 +6,7 @@
 - Add duplicate active-memory cleanup that archives duplicate durable memories instead of hard-deleting them.
 - Add CLI `hermes mann_memory cleanup --dry-run|--apply` and graph action support for operator-controlled cleanup.
 - Add regression coverage for duplicate proposal rejection, transcript/task-fragment cleanup, and duplicate memory archiving.
+- Document safe chat-bridge context-packet integration so large Mann_Memory results cannot truncate away persona and identity-boundary instructions.
 
 ## 0.1.7 - 2026-06-15
 
