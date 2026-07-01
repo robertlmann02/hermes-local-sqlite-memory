@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Sanitize public test/documentation examples by removing a personal-name fixture and a private organization logo reference.
+
 ## 0.1.8 - 2026-06-23
 
 - Add conservative `cleanup_hygiene` maintenance for review queues: dry-run by default, apply rejects duplicate/noisy pending proposals without auto-approving anything.

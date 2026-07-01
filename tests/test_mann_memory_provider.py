@@ -576,14 +576,14 @@ def test_portability_export_backup_bundle_contains_jsonl_sqlite_manifest_and_che
 def test_cleanup_hygiene_rejects_duplicate_pending_proposals_and_archives_duplicate_memories(tmp_path):
     p = _provider(tmp_path)
     kept = json.loads(p.handle_tool_call("mann_memory_store", {
-        "content": "Robert hates Snap packages and prefers Snap-free Linux setups.",
+        "content": "The user dislikes Snap packages and prefers Snap-free Linux setups.",
         "memory_type": "preference",
         "namespace": "default",
         "importance": 0.9,
         "confidence": 1.0,
     }))["memory"]
     duplicate = json.loads(p.handle_tool_call("mann_memory_store", {
-        "content": "Robert hates Snap packages and prefers Snap-free Linux setups.",
+        "content": "The user dislikes Snap packages and prefers Snap-free Linux setups.",
         "memory_type": "preference",
         "namespace": "default",
         "importance": 0.6,
@@ -591,7 +591,7 @@ def test_cleanup_hygiene_rejects_duplicate_pending_proposals_and_archives_duplic
     }))["memory"]
     p.handle_tool_call("mann_memory_review", {
         "action": "propose",
-        "content": "Robert hates Snap packages and prefers Snap-free Linux setups.",
+        "content": "The user dislikes Snap packages and prefers Snap-free Linux setups.",
         "memory_type": "preference",
         "namespace": "default",
     })

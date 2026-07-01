@@ -1,8 +1,4 @@
-# Hermes Mann_Memory
-
-<p align="center">
-  <img src=".github/assets/mannindustries-logo.png" alt="MannIndustries logo" width="420">
-</p>
+# Hermes Local SQLite Memory
 
 
 A local-first SQLite/FTS5 memory provider for [Hermes Agent](https://hermes-agent.nousresearch.com/docs). It is designed for private self-hosted assistants that need durable memory, searchable turn history, reviewable memory proposals, namespace isolation, graph-style context, and deterministic local consolidation without a cloud memory service.
